@@ -1,0 +1,351 @@
+===== MainEA.mq5 =====
+# MainEA.mq5
+#include <Trade\Trade.mqh>
+#include "TradeFunctions.mqh"
+#include "Utils.mqh"
+#include "DisplayFunctions.mqh"
+#include "RiskManagement.mqh"
+
+input double GapInPoints = 100.0;       // Gap between levels in points
+input double LotSize     = 0.10;        // Base lot size
+input int DebugLevel     = 2;           // Debug level (0=Off, 1=Basic, 2=Detailed)
+input bool EnableDisplay = true;        // Toggle chart info display
+input int RoundToNearest = 100;         // Round base level to nearest value
+
+// Risk Management Inputs
+input int MaxPositions = 10;            // Maximum allowed open positions
+input double MaxTotalLots = 5.0;        // Maximum allowed total lots
+input double MaxLoss = 1000.0;          // Maximum allowed floating loss
+input double DailyProfitTarget = 2000.0;// Daily profit target
+
+int OnInit()
+{
+   fnc_Print(DebugLevel, 1, "EA Initialized");
+   return(INIT_SUCCEEDED);
+}
+
+void OnTick()
+{
+   fnc_GetInfoFromOrdersTraversal(); // Fill global info
+   double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   fnc_CheckAndPlaceOrders(currentPrice, GapInPoints, DebugLevel);
+   fnc_UpdateChartLabel(EnableDisplay);
+}
+
+
+===== TradeFunctions.mqh =====
+# TradeFunctions.mqh
+#include <Trade\Trade.mqh>
+#include "Utils.mqh"
+#include "RiskManagement.mqh"
+
+CTrade trade;
+
+void fnc_CheckAndPlaceOrders(double currentPrice, double gap, int debugLevel)
+{
+   if(!fnc_IsTradingAllowed())
+   {
+      fnc_Print(debugLevel, 1, "Trading stopped due to risk limits");
+      return;
+   }
+
+   int totalPositions = PositionsTotal();
+   fnc_Print(debugLevel, 2, "Current Price: " + DoubleToString(currentPrice, 5) +
+                             ", Positions: " + IntegerToString(totalPositions));
+
+   double baseLevel = fnc_GetBaseLevel(currentPrice, gap);
+   int nearestLevelIndex = fnc_GetNearestOrderLevelIndex(currentPrice, gap);
+
+   fnc_Print(debugLevel, 2, "Base Level: " + DoubleToString(baseLevel, 5) +
+                             ", Nearest Level Index: " + IntegerToString(nearestLevelIndex));
+
+   if(totalPositions == 0)
+   {
+      if(nearestLevelIndex % 2 == 0)
+      {
+         fnc_OpenBuy(baseLevel, g_NextBuyLotSize);
+         fnc_Print(debugLevel, 1, "First Buy placed at " + DoubleToString(baseLevel, 5));
+      }
+      else
+      {
+         fnc_OpenSell(baseLevel, g_NextSellLotSize);
+         fnc_Print(debugLevel, 1, "First Sell placed at " + DoubleToString(baseLevel, 5));
+      }
+      return;
+   }
+
+   double nextLevelUp = baseLevel + ((nearestLevelIndex + 1) * gap);
+   double nextLevelDown = baseLevel + ((nearestLevelIndex - 1) * gap);
+
+   fnc_Print(debugLevel, 2, "Next Up: " + DoubleToString(nextLevelUp, 5) +
+                             ", Next Down: " + DoubleToString(nextLevelDown, 5));
+
+   if(currentPrice >= nextLevelUp)
+   {
+      if((nearestLevelIndex + 1) % 2 == 0)
+      {
+         if(!fnc_IsOrderAtLevel(nextLevelUp))
+         {
+            fnc_OpenBuy(nextLevelUp, g_NextBuyLotSize);
+            fnc_Print(debugLevel, 1, "Buy placed at " + DoubleToString(nextLevelUp, 5));
+         }
+         else fnc_Print(debugLevel, 2, "Skipped Buy: Order already exists at " +
+                                       DoubleToString(nextLevelUp, 5));
+      }
+      else fnc_Print(debugLevel, 2, "Skipped Buy: Next level is odd");
+   }
+
+   if(currentPrice <= nextLevelDown)
+   {
+      if((nearestLevelIndex - 1) % 2 != 0)
+      {
+         if(!fnc_IsOrderAtLevel(nextLevelDown))
+         {
+            fnc_OpenSell(nextLevelDown, g_NextSellLotSize);
+            fnc_Print(debugLevel, 1, "Sell placed at " + DoubleToString(nextLevelDown, 5));
+         }
+         else fnc_Print(debugLevel, 2, "Skipped Sell: Order already exists at " +
+                                       DoubleToString(nextLevelDown, 5));
+      }
+      else fnc_Print(debugLevel, 2, "Skipped Sell: Next level is even");
+   }
+}
+
+void fnc_OpenBuy(double price, double lot)
+{
+   trade.Buy(lot, _Symbol);
+}
+
+void fnc_OpenSell(double price, double lot)
+{
+   trade.Sell(lot, _Symbol);
+}
+
+
+===== Utils.mqh =====
+# Utils.mqh
+extern double LotSize;
+extern int RoundToNearest;
+extern double GapInPoints;
+
+double g_TotalNetLots = 0.0;
+double g_TotalProfit = 0.0;
+double g_TotalBuyLots = 0.0;
+double g_TotalSellLots = 0.0;
+int g_CountBuyOrders = 0;
+int g_CountSellOrders = 0;
+
+double g_NextBuyLotSize = 0.0;
+double g_NextSellLotSize = 0.0;
+
+void fnc_Print(int debugLevel, int level, string message)
+{
+   if(level <= debugLevel)
+      Print("[DEBUG-" + IntegerToString(level) + "] " + message);
+}
+
+void fnc_GetInfoFromOrdersTraversal()
+{
+   g_TotalNetLots = 0.0;
+   g_TotalProfit = 0.0;
+   g_TotalBuyLots = 0.0;
+   g_TotalSellLots = 0.0;
+   g_CountBuyOrders = 0;
+   g_CountSellOrders = 0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionSelectByTicket(ticket))
+      {
+         double lots = PositionGetDouble(POSITION_VOLUME);
+         double profit = PositionGetDouble(POSITION_PROFIT);
+         int type = (int)PositionGetInteger(POSITION_TYPE);
+
+         g_TotalProfit += profit;
+
+         if(type == POSITION_TYPE_BUY)
+         {
+            g_TotalBuyLots += lots;
+            g_CountBuyOrders++;
+            g_TotalNetLots += lots;
+         }
+         else if(type == POSITION_TYPE_SELL)
+         {
+            g_TotalSellLots += lots;
+            g_CountSellOrders++;
+            g_TotalNetLots -= lots;
+         }
+      }
+   }
+
+   int maxOrders = MathMax(g_CountBuyOrders, g_CountSellOrders);
+
+   if(g_TotalNetLots > 0)
+   {
+      g_NextSellLotSize = LotSize * maxOrders;
+      g_NextBuyLotSize = g_NextSellLotSize + (g_TotalNetLots / 2);
+   }
+   else if(g_TotalNetLots < 0)
+   {
+      g_NextBuyLotSize = LotSize * maxOrders;
+      g_NextSellLotSize = g_NextBuyLotSize + (MathAbs(g_TotalNetLots) / 2);
+   }
+   else
+   {
+      g_NextBuyLotSize = LotSize;
+      g_NextSellLotSize = LotSize;
+   }
+
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double stepLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+
+   g_NextBuyLotSize = MathMax(g_NextBuyLotSize, minLot);
+   g_NextBuyLotSize = MathRound(g_NextBuyLotSize / stepLot) * stepLot;
+
+   g_NextSellLotSize = MathMax(g_NextSellLotSize, minLot);
+   g_NextSellLotSize = MathRound(g_NextSellLotSize / stepLot) * stepLot;
+
+   fnc_Print(2, 1, "Next Buy Lot: " + DoubleToString(g_NextBuyLotSize, 3) +
+                 ", Next Sell Lot: " + DoubleToString(g_NextSellLotSize, 3));
+}
+
+int fnc_GetNearestOrderLevelIndex(double currentPrice, double gap)
+{
+   if(PositionsTotal() == 0) return 0;
+
+   double nearestPrice = currentPrice;
+   double minDiff = DBL_MAX;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionSelectByTicket(ticket))
+      {
+         double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+         double diff = MathAbs(openPrice - currentPrice);
+         if(diff < minDiff)
+         {
+            minDiff = diff;
+            nearestPrice = openPrice;
+         }
+      }
+   }
+
+   return (int)MathRound((nearestPrice - fnc_GetBasePrice(currentPrice, gap)) / gap);
+}
+
+double fnc_GetBaseLevel(double currentPrice, double gap)
+{
+   return fnc_GetBasePrice(currentPrice, gap);
+}
+
+double fnc_GetBasePrice(double price, double gap)
+{
+   double rounded = MathRound(price / RoundToNearest) * RoundToNearest;
+   return rounded;
+}
+
+bool fnc_IsOrderAtLevel(double levelPrice)
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionSelectByTicket(ticket))
+      {
+         double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+         if(MathAbs(openPrice - levelPrice) < 0.00001)
+            return true;
+      }
+   }
+   return false;
+}
+
+
+===== DisplayFunctions.mqh =====
+# DisplayFunctions.mqh
+#include "Utils.mqh"
+
+void fnc_UpdateChartLabel(bool enableDisplay)
+{
+   if(!enableDisplay) return;
+
+   string labelName = "EA_Info_Label";
+   color profitColor = (g_TotalProfit >= 0) ? clrLime : clrRed;
+
+   string infoText = "Net Lots: " + DoubleToString(g_TotalNetLots, 2) +
+                     "\nProfit: " + DoubleToString(g_TotalProfit, 2) +
+                     "\nBuy Orders: " + IntegerToString(g_CountBuyOrders) +
+                     "\nSell Orders: " + IntegerToString(g_CountSellOrders) +
+                     "\nNext Buy Lot: " + DoubleToString(g_NextBuyLotSize, 3) +
+                     "\nNext Sell Lot: " + DoubleToString(g_NextSellLotSize, 3) +
+                     "\nMaxPos: " + IntegerToString(MaxPositions) +
+                     "\nMaxLots: " + DoubleToString(MaxTotalLots, 2) +
+                     "\nMaxLoss: " + DoubleToString(MaxLoss, 2) +
+                     "\nProfitTarget: " + DoubleToString(DailyProfitTarget, 2);
+
+   if(ObjectFind(0, labelName) == -1)
+   {
+      ObjectCreate(0, labelName, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, labelName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, labelName, OBJPROP_XDISTANCE, 10);
+      ObjectSetInteger(0, labelName, OBJPROP_YDISTANCE, 20);
+   }
+
+   ObjectSetInteger(0, labelName, OBJPROP_COLOR, profitColor);
+   ObjectSetInteger(0, labelName, OBJPROP_FONTSIZE, 40);
+   ObjectSetString(0, labelName, OBJPROP_TEXT, infoText);
+}
+
+
+===== RiskManagement.mqh =====
+# RiskManagement.mqh
+#include "Utils.mqh"
+
+bool fnc_CheckMaxPositions()
+{
+   return (PositionsTotal() < MaxPositions);
+}
+
+bool fnc_CheckMaxTotalLots()
+{
+   double totalLots = g_TotalBuyLots + g_TotalSellLots;
+   return (totalLots < MaxTotalLots);
+}
+
+bool fnc_CheckMaxLoss()
+{
+   return (g_TotalProfit > -MaxLoss);
+}
+
+bool fnc_CheckDailyProfitTarget()
+{
+   return (g_TotalProfit < DailyProfitTarget);
+}
+
+bool fnc_IsTradingAllowed()
+{
+   if(!fnc_CheckMaxPositions())
+   {
+      fnc_Print(1, 1, "Risk Check: Max positions reached");
+      return false;
+   }
+   if(!fnc_CheckMaxTotalLots())
+   {
+      fnc_Print(1, 1, "Risk Check: Max total lots reached");
+      return false;
+   }
+   if(!fnc_CheckMaxLoss())
+   {
+      fnc_Print(1, 1, "Risk Check: Max loss exceeded");
+      return false;
+   }
+   if(!fnc_CheckDailyProfitTarget())
+   {
+      fnc_Print(1, 1, "Risk Check: Daily profit target reached");
+      return false;
+   }
+   return true;
+}
+
+

@@ -1,0 +1,272 @@
+MQ5 EA1 - Benchmark 7 Logic Summary
+====================================
+Features Implemented:
+1. Level-Based Trading Logic:
+   - MQ4-style level indexing using origin price.
+   - Buy on upward cross of even levels, Sell on downward cross of odd levels.
+   - Spread-adjusted trigger points.
+   - Dynamic range calculation for crossed levels.
+
+2. Duplicate Prevention:
+   - Checks for same type on level and near level before placing orders.
+   - Prevents repeated orders on same or adjacent levels.
+
+3. Dynamic Lot Sizing:
+   - Calculates next lot sizes based on net positions and risk parameters.
+
+4. Risk Management:
+   - Stops trading when max positions, max lots, max loss, or daily profit target reached.
+
+5. Display Functions:
+   - Shows EA status, next lot sizes, order summary, risk info, and performance metrics on chart.
+
+6. Performance Tracking:
+   - Measures tick execution time and averages.
+
+7. Modular Structure:
+   - MainEA.mq5: Entry point and tick handler.
+   - TradeFunctions.mqh: Trading logic and order placement.
+   - Utils.mqh: Helpers, level indexing, dynamic lot sizing, duplicate checks.
+   - RiskManagement.mqh: Risk checks and trading permission.
+   - DisplayFunctions.mqh: Chart display and labels.
+====================================
+
+MainEA.mq5
+------------------------------------
+#property strict
+#include <Trade/Trade.mqh>
+#include "TradeFunctions.mqh"
+#include "Utils.mqh"
+#include "DisplayFunctions.mqh"
+#include "RiskManagement.mqh"
+
+// Inputs
+input double GapInPoints = 100.0;
+input double LotSize = 0.01;
+input int DebugLevel = 2;
+input bool EnableDisplay = true;
+input int RoundToNearest = 1;
+
+// Risk Inputs
+input int MaxPositions = 1000;
+input double MaxTotalLots = 500.0;
+input double MaxLoss = 5000.0;
+input double DailyProfitTarget = 5000.0;
+
+// Performance
+input bool EnablePerformance = false;
+
+int OnInit()
+{
+   fnc_Print(DebugLevel, 1, StringFormat("EA Initialized (DebugLevel=%d)", DebugLevel));
+   return(INIT_SUCCEEDED);
+}
+
+void OnTick()
+{
+   ulong startTime = GetMicrosecondCount();
+
+   fnc_GetInfoFromOrdersTraversal();
+   fnc_UpdateRiskStatus();
+   double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+   fnc_CheckAndPlaceOrders(currentPrice, GapInPoints, DebugLevel);
+   fnc_UpdateChartLabel(EnableDisplay, EnablePerformance);
+
+   fnc_MeasurePerformance(EnablePerformance, startTime);
+}
+
+void OnDeinit(const int reason)
+{
+   ObjectDelete(0, "EA_Status");
+   ObjectDelete(0, "EA_NextLots");
+   ObjectDelete(0, "EA_Orders");
+   ObjectDelete(0, "EA_Risk");
+   ObjectDelete(0, "EA_Perf");
+}
+
+
+TradeFunctions.mqh
+------------------------------------
+#property strict
+#include <Trade/Trade.mqh>
+#include "Utils.mqh"
+#include "RiskManagement.mqh"
+
+CTrade trade;
+
+void fnc_CheckAndPlaceOrders(double currentPrice, double gapPx, int debugLevel)
+{
+   if(!g_TradingAllowed)
+   {
+      fnc_Print(debugLevel, 1, "Trading stopped due to risk limits");
+      return;
+   }
+
+   if(g_originPrice == 0)
+      g_originPrice = currentPrice;
+
+   double sprPx = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * _Point;
+   double nowAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double nowBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   static double prevAsk = nowAsk;
+   static double prevBid = nowBid;
+
+   fnc_Print(debugLevel, 2, StringFormat("PrevAsk: %.5f NowAsk: %.5f | PrevBid: %.5f NowBid: %.5f", prevAsk, nowAsk, prevBid, nowBid));
+
+   // BUY logic
+   if(nowAsk > prevAsk)
+   {
+      int Llo = fnc_PriceLevelIndex(MathMin(prevAsk, nowAsk) - sprPx, gapPx) - 2;
+      int Lhi = fnc_PriceLevelIndex(MathMax(prevAsk, nowAsk) - sprPx, gapPx) + 2;
+
+      for(int L = Llo; L <= Lhi; L++)
+      {
+         if(!IsEven(L)) continue;
+         double trig = fnc_LevelPrice(L, gapPx) + sprPx;
+         if(prevAsk <= trig && nowAsk > trig)
+         {
+            fnc_Print(debugLevel, 1, StringFormat("[BUY Check] Level:%d Price:%.5f Trigger:%.5f", L, fnc_LevelPrice(L, gapPx), trig));
+
+            if(fnc_HasSameTypeOnLevel(POSITION_TYPE_BUY, L, gapPx))
+            {
+               fnc_Print(debugLevel, 1, StringFormat("Skipped BUY at Level:%d (duplicate on same level)", L));
+               continue;
+            }
+            if(fnc_HasSameTypeNearLevel(POSITION_TYPE_BUY, L, gapPx, 1))
+            {
+               fnc_Print(debugLevel, 1, StringFormat("Skipped BUY at Level:%d (duplicate near level)", L));
+               continue;
+            }
+
+            fnc_OpenBuy(fnc_LevelPrice(L, gapPx), g_NextBuyLotSize);
+            fnc_Print(debugLevel, 1, StringFormat("BUY placed at Level:%d Price:%.5f", L, fnc_LevelPrice(L, gapPx)));
+         }
+      }
+   }
+
+   // SELL logic
+   if(nowBid < prevBid)
+   {
+      int Llo = fnc_PriceLevelIndex(MathMin(prevBid, nowBid) + sprPx, gapPx) - 2;
+      int Lhi = fnc_PriceLevelIndex(MathMax(prevBid, nowBid) + sprPx, gapPx) + 2;
+
+      for(int L = Lhi; L >= Llo; L--)
+      {
+         if(!IsOdd(L)) continue;
+         double trig = fnc_LevelPrice(L, gapPx) - sprPx;
+         if(prevBid >= trig && nowBid < trig)
+         {
+            fnc_Print(debugLevel, 1, StringFormat("[SELL Check] Level:%d Price:%.5f Trigger:%.5f", L, fnc_LevelPrice(L, gapPx), trig));
+
+            if(fnc_HasSameTypeOnLevel(POSITION_TYPE_SELL, L, gapPx))
+            {
+               fnc_Print(debugLevel, 1, StringFormat("Skipped SELL at Level:%d (duplicate on same level)", L));
+               continue;
+            }
+            if(fnc_HasSameTypeNearLevel(POSITION_TYPE_SELL, L, gapPx, 1))
+            {
+               fnc_Print(debugLevel, 1, StringFormat("Skipped SELL at Level:%d (duplicate near level)", L));
+               continue;
+            }
+
+            fnc_OpenSell(fnc_LevelPrice(L, gapPx), g_NextSellLotSize);
+            fnc_Print(debugLevel, 1, StringFormat("SELL placed at Level:%d Price:%.5f", L, fnc_LevelPrice(L, gapPx)));
+         }
+      }
+   }
+
+   prevAsk = nowAsk;
+   prevBid = nowBid;
+}
+
+void fnc_OpenBuy(double price, double lot) { trade.Buy(lot, _Symbol); }
+void fnc_OpenSell(double price, double lot) { trade.Sell(lot, _Symbol); }
+
+
+FULL UPDATED Utils.mqh with all helpers and de-dup logic as provided above
+
+RiskManagement.mqh
+------------------------------------
+#property strict
+#include "Utils.mqh"
+
+bool g_TradingAllowed = true;
+
+void fnc_UpdateRiskStatus()
+{
+   g_TradingAllowed = true;
+
+   if(PositionsTotal() >= MaxPositions)
+   {
+      fnc_Print(1, 1, StringFormat("Risk Check: Max positions reached (Positions=%d)", PositionsTotal()));
+      g_TradingAllowed = false;
+   }
+   else if((g_TotalBuyLots + g_TotalSellLots) >= MaxTotalLots)
+   {
+      fnc_Print(1, 1, StringFormat("Risk Check: Max total lots reached (TotalLots=%.2f)", g_TotalBuyLots + g_TotalSellLots));
+      g_TradingAllowed = false;
+   }
+   else if(g_TotalProfit <= -MaxLoss)
+   {
+      fnc_Print(1, 1, StringFormat("Risk Check: Max loss exceeded (Profit=%.2f)", g_TotalProfit));
+      g_TradingAllowed = false;
+   }
+   else if(g_TotalProfit >= DailyProfitTarget)
+   {
+      fnc_Print(1, 1, StringFormat("Risk Check: Daily profit target reached (Profit=%.2f)", g_TotalProfit));
+      g_TradingAllowed = false;
+   }
+}
+
+
+DisplayFunctions.mqh
+------------------------------------
+#property strict
+#include "Utils.mqh"
+
+void fnc_UpdateChartLabel(bool enableDisplay, bool enablePerf)
+{
+   if(!enableDisplay) return;
+
+   color profitColor = (g_TotalProfit >= 0) ? clrLime : clrRed;
+
+   fnc_CreateOrUpdateLabel("EA_Status",
+      StringFormat("Status: %s | Profit: %.2f", (g_TradingAllowed ? "ACTIVE" : "STOPPED"), g_TotalProfit),
+      profitColor, 10, 20);
+
+   fnc_CreateOrUpdateLabel("EA_NextLots",
+      StringFormat("Next Buy: %.2f | Next Sell: %.2f", g_NextBuyLotSize, g_NextSellLotSize),
+      clrWhite, 10, 50);
+
+   fnc_CreateOrUpdateLabel("EA_Orders",
+      StringFormat("ORD: B %.2f | S %.2f | T %.2f | N %.2f", g_TotalBuyLots, g_TotalSellLots,
+                   (g_TotalBuyLots + g_TotalSellLots), g_TotalNetLots),
+      clrWhite, 10, 80);
+
+   fnc_CreateOrUpdateLabel("EA_Risk",
+      StringFormat("MaxPos:%d | MaxLots:%.2f | MaxLoss:%.2f | Target:%.2f",
+                   MaxPositions, MaxTotalLots, MaxLoss, DailyProfitTarget),
+      clrWhite, 10, 110);
+
+   if(enablePerf)
+   {
+      fnc_CreateOrUpdateLabel("EA_Perf",
+         StringFormat("Perf: Last %.2f ms | Avg %.2f ms", g_LastTickTime, g_AvgTickTime),
+         clrYellow, 10, 140);
+   }
+}
+
+void fnc_CreateOrUpdateLabel(string name, string text, color col, int x, int y)
+{
+   if(ObjectFind(0, name) == -1)
+   {
+      ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+      ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   }
+   ObjectSetInteger(0, name, OBJPROP_COLOR, col);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 14);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+}

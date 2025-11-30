@@ -1,0 +1,406 @@
+==================== EA PROJECT BENCHMARK VERSION 4 ====================
+
+LOGIC OVERVIEW:
+---------------
+This Expert Advisor (EA) is designed using a modular architecture for clarity, reusability, and performance.
+It includes the following key features:
+
+1. **Level-Based Trading Logic**:
+   - Places Buy/Sell orders at price levels spaced by a configurable gap.
+   - Even levels trigger Buy orders; odd levels trigger Sell orders.
+   - Prevents duplicate orders at the same level.
+
+2. **Dynamic Lot Sizing**:
+   - Calculates next Buy/Sell lot sizes based on net exposure.
+   - Normalizes lot sizes to broker rules (min lot, step size).
+
+3. **Base Level Rounding**:
+   - Aligns base level to a configurable round figure for better visibility.
+
+4. **Chart Display Enhancements**:
+   - Displays key info (profit, net lots, next lot sizes, risk limits) on chart.
+   - Font size set to 40 for high visibility.
+
+5. **Risk Management**:
+   - Max positions, max total lots, max loss, and daily profit target checks.
+   - Stops trading when any limit is hit.
+
+FILE STRUCTURE:
+---------------
+- MainEA.mq5: Entry point, inputs, OnTick logic.
+- TradeFunctions.mqh: Core trading logic (order placement).
+- Utils.mqh: Global variables, helper functions, dynamic lot calculations.
+- DisplayFunctions.mqh: Chart display logic.
+- RiskManagement.mqh: Risk checks and master control function.
+
+INSTRUCTIONS TO SPLIT:
+----------------------
+1. Copy each section below into its respective file:
+   - Section labeled "===== MainEA.mq5 =====" → MainEA.mq5
+   - Section labeled "===== TradeFunctions.mqh =====" → TradeFunctions.mqh
+   - Section labeled "===== Utils.mqh =====" → Utils.mqh
+   - Section labeled "===== DisplayFunctions.mqh =====" → DisplayFunctions.mqh
+   - Section labeled "===== RiskManagement.mqh =====" → RiskManagement.mqh
+
+2. Place all .mqh files in the same folder as MainEA.mq5.
+3. Compile MainEA.mq5 in MetaEditor.
+
+==========================================================================
+
+===== MainEA.mq5 =====
+
+#property strict
+#include <Trade/Trade.mqh>
+#include "TradeFunctions.mqh"
+#include "Utils.mqh"
+#include "DisplayFunctions.mqh"
+#include "RiskManagement.mqh"
+
+// Inputs
+input double GapInPoints = 100.0;
+input double LotSize = 0.01;
+input int DebugLevel = 2;
+input bool EnableDisplay = true;
+input int RoundToNearest = 1;
+
+// Risk Inputs
+input int MaxPositions = 1000;
+input double MaxTotalLots = 500.0;
+input double MaxLoss = 5000.0;
+input double DailyProfitTarget = 5000.0;
+
+// Performance
+input bool EnablePerformance = false;
+
+int OnInit()
+{
+   fnc_Print(DebugLevel, 1, StringFormat("EA Initialized (DebugLevel=%d)", DebugLevel));
+   return(INIT_SUCCEEDED);
+}
+
+void OnTick()
+{
+   ulong startTime = GetMicrosecondCount();
+
+   fnc_GetInfoFromOrdersTraversal();
+   fnc_UpdateRiskStatus();
+   double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+   fnc_CheckAndPlaceOrders(currentPrice, GapInPoints, DebugLevel);
+   fnc_UpdateChartLabel(EnableDisplay, EnablePerformance);
+
+   fnc_MeasurePerformance(EnablePerformance, startTime);
+}
+
+void OnDeinit(const int reason)
+{
+   ObjectDelete(0, "EA_Status");
+   ObjectDelete(0, "EA_NextLots");
+   ObjectDelete(0, "EA_Orders");
+   ObjectDelete(0, "EA_Risk");
+   ObjectDelete(0, "EA_Perf");
+}
+
+
+===== TradeFunctions.mqh =====
+
+#property strict
+#include <Trade/Trade.mqh>
+#include "Utils.mqh"
+#include "RiskManagement.mqh"
+
+CTrade trade;
+
+void fnc_CheckAndPlaceOrders(double currentPrice, double gap, int debugLevel)
+{
+   if(!g_TradingAllowed)
+   {
+      fnc_Print(debugLevel, 1, StringFormat("Trading stopped due to risk limits",debugLevel));
+      return;
+   }
+
+   int totalPositions = PositionsTotal();
+   double baseLevel = fnc_GetBaseLevel(currentPrice, gap);
+   int nearestLevelIndex = fnc_GetNearestOrderLevelIndex(currentPrice, gap);
+
+   fnc_Print(debugLevel, 2, StringFormat("Base Level: %.5f, Nearest Index: %d", baseLevel, nearestLevelIndex));
+
+   // If no positions, place first trade
+   if(totalPositions == 0)
+   {
+      if(nearestLevelIndex % 2 == 0)
+      {
+         fnc_OpenBuy(baseLevel, g_NextBuyLotSize);
+         fnc_Print(debugLevel, 1, StringFormat("First Buy placed at %.5f", baseLevel));
+      }
+      else
+      {
+         fnc_OpenSell(baseLevel, g_NextSellLotSize);
+         fnc_Print(debugLevel, 1, StringFormat("First Sell placed at %.5f", baseLevel));
+      }
+      return;
+   }
+
+   // Determine current index relative to base level
+   int currentIndex = (int)MathRound((currentPrice - baseLevel) / gap);
+
+   // If price moved up, check all crossed levels
+   if(currentIndex > nearestLevelIndex)
+   {
+      for(int i = nearestLevelIndex + 1; i <= currentIndex; i++)
+      {
+         double levelPrice = baseLevel + (i * gap);
+         if(!fnc_IsOrderAtLevel(levelPrice))
+         {
+            if(i % 2 == 0) // Even level → Buy
+            {
+               fnc_OpenBuy(levelPrice, g_NextBuyLotSize);
+               fnc_Print(debugLevel, 1, StringFormat("Buy placed at %.5f", levelPrice));
+            }
+         }
+      }
+   }
+   // If price moved down, check all crossed levels
+   else if(currentIndex < nearestLevelIndex)
+   {
+      for(int i = nearestLevelIndex - 1; i >= currentIndex; i--)
+      {
+         double levelPrice = baseLevel + (i * gap);
+         if(!fnc_IsOrderAtLevel(levelPrice))
+         {
+            if(i % 2 != 0) // Odd level → Sell
+            {
+               fnc_OpenSell(levelPrice, g_NextSellLotSize);
+               fnc_Print(debugLevel, 1, StringFormat("Sell placed at %.5f", levelPrice));
+            }
+         }
+      }
+   }
+}
+
+void fnc_OpenBuy(double price, double lot) { trade.Buy(lot, _Symbol); }
+void fnc_OpenSell(double price, double lot) { trade.Sell(lot, _Symbol); }
+
+
+===== Utils.mqh =====
+
+#property strict
+
+double g_TotalNetLots = 0.0;
+double g_TotalProfit = 0.0;
+double g_TotalBuyLots = 0.0;
+double g_TotalSellLots = 0.0;
+int g_CountBuyOrders = 0;
+int g_CountSellOrders = 0;
+double g_NextBuyLotSize = 0.0;
+double g_NextSellLotSize = 0.0;
+
+// Performance globals
+double g_LastTickTime = 0.0;
+double g_AvgTickTime = 0.0;
+int g_TickCount = 0;
+
+void fnc_Print(int debugLevel, int level, string message)
+{
+   if(level <= debugLevel) Print(StringFormat("[DEBUG-%d] %s", level, message));
+}
+
+void fnc_GetInfoFromOrdersTraversal()
+{
+   g_TotalNetLots = g_TotalProfit = g_TotalBuyLots = g_TotalSellLots = 0.0;
+   g_CountBuyOrders = g_CountSellOrders = 0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionSelectByTicket(ticket))
+      {
+         double lots = PositionGetDouble(POSITION_VOLUME);
+         double profit = PositionGetDouble(POSITION_PROFIT);
+         int type = (int)PositionGetInteger(POSITION_TYPE);
+
+         g_TotalProfit += profit;
+         if(type == POSITION_TYPE_BUY)
+         {
+            g_TotalBuyLots += lots;
+            g_CountBuyOrders++;
+            g_TotalNetLots += lots;
+         }
+         else if(type == POSITION_TYPE_SELL)
+         {
+            g_TotalSellLots += lots;
+            g_CountSellOrders++;
+            g_TotalNetLots -= lots;
+         }
+      }
+   }
+
+   int maxOrders = MathMax(g_CountBuyOrders, g_CountSellOrders);
+   if(g_TotalNetLots > 0)
+   {
+      g_NextSellLotSize = LotSize * maxOrders;
+      g_NextBuyLotSize = g_NextSellLotSize + (g_TotalNetLots / 2);
+   }
+   else if(g_TotalNetLots < 0)
+   {
+      g_NextBuyLotSize = LotSize * maxOrders;
+      g_NextSellLotSize = g_NextBuyLotSize + (MathAbs(g_TotalNetLots) / 2);
+   }
+   else
+   {
+      g_NextBuyLotSize = LotSize;
+      g_NextSellLotSize = LotSize;
+   }
+
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double stepLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   g_NextBuyLotSize = MathMax(g_NextBuyLotSize, minLot);
+   g_NextBuyLotSize = MathRound(g_NextBuyLotSize / stepLot) * stepLot;
+   g_NextSellLotSize = MathMax(g_NextSellLotSize, minLot);
+   g_NextSellLotSize = MathRound(g_NextSellLotSize / stepLot) * stepLot;
+
+   fnc_Print(2, 1, StringFormat("Next Buy Lot: %.3f, Next Sell Lot: %.3f", g_NextBuyLotSize, g_NextSellLotSize));
+}
+
+void fnc_MeasurePerformance(bool enablePerf, ulong startTime)
+{
+   if(!enablePerf) return;
+
+   ulong endTime = GetMicrosecondCount();
+   double elapsed = (double)(endTime - startTime) / 1000.0; // ms
+   g_LastTickTime = elapsed;
+   g_TickCount++;
+   g_AvgTickTime = ((g_AvgTickTime * (g_TickCount - 1)) + elapsed) / g_TickCount;
+}
+
+double fnc_GetBaseLevel(double currentPrice, double gap)
+{
+   return fnc_GetBasePrice(currentPrice, gap);
+}
+
+double fnc_GetBasePrice(double price, double gap)
+{
+   return MathRound(price / RoundToNearest) * RoundToNearest;
+}
+
+int fnc_GetNearestOrderLevelIndex(double currentPrice, double gap)
+{
+   if(PositionsTotal() == 0) return 0;
+   double nearestPrice = currentPrice;
+   double minDiff = DBL_MAX;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionSelectByTicket(ticket))
+      {
+         double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+         double diff = MathAbs(openPrice - currentPrice);
+         if(diff < minDiff)
+         {
+            minDiff = diff;
+            nearestPrice = openPrice;
+         }
+      }
+   }
+   return (int)MathRound((nearestPrice - fnc_GetBasePrice(currentPrice, gap)) / gap);
+}
+
+bool fnc_IsOrderAtLevel(double levelPrice)
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionSelectByTicket(ticket))
+      {
+         double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+         if(MathAbs(openPrice - levelPrice) < 0.00001) return true;
+      }
+   }
+   return false;
+}
+
+
+===== RiskManagement.mqh =====
+
+#property strict
+#include "Utils.mqh"
+
+bool g_TradingAllowed = true;
+
+void fnc_UpdateRiskStatus()
+{
+   g_TradingAllowed = true;
+
+   if(PositionsTotal() >= MaxPositions)
+   {
+      fnc_Print(1, 1, StringFormat("Risk Check: Max positions reached (Positions=%d)", PositionsTotal()));
+      g_TradingAllowed = false;
+   }
+   else if((g_TotalBuyLots + g_TotalSellLots) >= MaxTotalLots)
+   {
+      fnc_Print(1, 1, StringFormat("Risk Check: Max total lots reached (TotalLots=%.2f)", g_TotalBuyLots + g_TotalSellLots));
+      g_TradingAllowed = false;
+   }
+   else if(g_TotalProfit <= -MaxLoss)
+   {
+      fnc_Print(1, 1, StringFormat("Risk Check: Max loss exceeded (Profit=%.2f)", g_TotalProfit));
+      g_TradingAllowed = false;
+   }
+   else if(g_TotalProfit >= DailyProfitTarget)
+   {
+      fnc_Print(1, 1, StringFormat("Risk Check: Daily profit target reached (Profit=%.2f)", g_TotalProfit));
+      g_TradingAllowed = false;
+   }
+}
+
+
+===== DisplayFunctions.mqh =====
+#property strict
+#include "Utils.mqh"
+
+void fnc_UpdateChartLabel(bool enableDisplay, bool enablePerf)
+{
+   if(!enableDisplay) return;
+
+   color profitColor = (g_TotalProfit >= 0) ? clrLime : clrRed;
+
+   fnc_CreateOrUpdateLabel("EA_Status",
+      StringFormat("Status: %s | Profit: %.2f", (g_TradingAllowed ? "ACTIVE" : "STOPPED"), g_TotalProfit),
+      profitColor, 10, 20);
+
+   fnc_CreateOrUpdateLabel("EA_NextLots",
+      StringFormat("Next Buy: %.2f | Next Sell: %.2f", g_NextBuyLotSize, g_NextSellLotSize),
+      clrWhite, 10, 50);
+
+   fnc_CreateOrUpdateLabel("EA_Orders",
+      StringFormat("ORD: B %.2f | S %.2f | T %.2f | N %.2f", g_TotalBuyLots, g_TotalSellLots,
+                   (g_TotalBuyLots + g_TotalSellLots), g_TotalNetLots),
+      clrWhite, 10, 80);
+
+   fnc_CreateOrUpdateLabel("EA_Risk",
+      StringFormat("MaxPos:%d | MaxLots:%.2f | MaxLoss:%.2f | Target:%.2f",
+                   MaxPositions, MaxTotalLots, MaxLoss, DailyProfitTarget),
+      clrWhite, 10, 110);
+
+   if(enablePerf)
+   {
+      fnc_CreateOrUpdateLabel("EA_Perf",
+         StringFormat("Perf: Last %.2f ms | Avg %.2f ms", g_LastTickTime, g_AvgTickTime),
+         clrYellow, 10, 140);
+   }
+}
+
+void fnc_CreateOrUpdateLabel(string name, string text, color col, int x, int y)
+{
+   if(ObjectFind(0, name) == -1)
+   {
+      ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+      ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   }
+   ObjectSetInteger(0, name, OBJPROP_COLOR, col);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 14);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+}
