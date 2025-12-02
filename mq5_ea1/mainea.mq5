@@ -47,6 +47,7 @@ void OnTick()
    fnc_TrailTotalProfit();
    
    fnc_CloseOrdersBySingleProfit();
+   fnc_TrailAndCloseSingleByProfit();
 
    fnc_UpdateChartLabel(EnableDisplay, EnablePerformance);
 

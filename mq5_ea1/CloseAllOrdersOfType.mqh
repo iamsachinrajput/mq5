@@ -7,7 +7,9 @@
 #include "Utils.mqh"
 
 
-// whatType options: "ALL", "BUY", "SELL", "PROFIT", "LOSS"
+// whatType options: "ALL", "BUY", "SELL", "PROFIT", "LOSS", "MAJORITY", "MINORITY"
+// - "MAJORITY": closes orders of the side with the majority net lots (e.g., net>0 -> close BUYs)
+// - "MINORITY": closes orders of the side with the minority net lots
 void fnc_CloseAllOrdersOfType(string whatType)
 {
    int total = PositionsTotal();
@@ -18,6 +20,29 @@ void fnc_CloseAllOrdersOfType(string whatType)
    }
 
    fnc_Print(DebugLevel, 1, StringFormat("[CloseAllOrdersOfType] Closing type: %s | Total positions: %d", whatType, total));
+
+   // prepare majority/minority decision if requested
+   int majoritySide = -1; // POSITION_TYPE_BUY or POSITION_TYPE_SELL
+   int minoritySide = -1;
+   double net = g_netLots; // prefer per-traversal net (bLots - sLots)
+   if(whatType == "MAJORITY" || whatType == "MINORITY")
+   {
+      if(MathAbs(net) < 1e-12)
+      {
+         fnc_Print(DebugLevel, 1, "[CloseAllOrdersOfType] Net lots are zero; MAJORITY/MINORITY ambiguous. No action.");
+         return;
+      }
+      if(net > 0)
+      {
+         majoritySide = POSITION_TYPE_BUY;
+         minoritySide = POSITION_TYPE_SELL;
+      }
+      else
+      {
+         majoritySide = POSITION_TYPE_SELL;
+         minoritySide = POSITION_TYPE_BUY;
+      }
+   }
 
    for(int i = total - 1; i >= 0; i--)
    {
@@ -41,12 +66,22 @@ void fnc_CloseAllOrdersOfType(string whatType)
          shouldClose = true;
       else if(whatType == "LOSS" && profit < 0)
          shouldClose = true;
+      else if(whatType == "MAJORITY" && type == majoritySide)
+         shouldClose = true;
+      else if(whatType == "MINORITY" && type == minoritySide)
+         shouldClose = true;
 
       if(shouldClose)
       {
          fnc_Print(DebugLevel, 1, StringFormat("[CloseAllOrdersOfType] Closing Ticket:%d Type:%s Profit:%.2f",
                                                ticket, (type==POSITION_TYPE_BUY?"BUY":"SELL"), profit));
-         trade.PositionClose(ticket);
+         CTrade ctrade;
+         bool ok = ctrade.PositionClose(ticket);
+         if(!ok)
+         {
+            int err = GetLastError();
+            fnc_Print(DebugLevel, 0, StringFormat("[CloseAllOrdersOfType] Failed to close Ticket:%d Err:%d", ticket, err));
+         }
       }
    }
 }

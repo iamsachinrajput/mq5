@@ -50,6 +50,10 @@ string g_new_order_coments = "";
 string g_text_LR = "";
 int GPO = 0; // profitable orders count
 int GLO = 0; // losing orders count
+// Max loss (absolute) touched in current cycle (after last close-all)
+double g_max_Loss_touched_this_cycle = 0.0;
+// Max profit touched in current cycle (after last close-all)
+double g_max_profit_touched_this_cycle = 0.0;
 
 //============================= Helpers =============================//
 bool IsEven(int L){ return (L % 2 == 0); }
@@ -196,7 +200,27 @@ void fnc_GetInfoFromOrdersTraversal()
                                       g_short_close_bytrail_total_profit,
                                       g_netLots);
 
-   fnc_Print(2, 1, StringFormat("Next Buy Lot: %.3f, Next Sell Lot: %.3f", g_NextBuyLotSize, g_NextSellLotSize));
+   // Update cycle max loss touched: track absolute largest negative open-profit seen
+   if(g_openTotalCount == 0)
+   {
+      // No positions -> reset cycle max loss and max profit
+      g_max_Loss_touched_this_cycle = 0.0;
+      g_max_profit_touched_this_cycle = 0.0;
+   }
+   else
+   {
+      if(g_current_open_profit < 0.0)
+      {
+         double absLoss = MathAbs(g_current_open_profit);
+         if(absLoss > g_max_Loss_touched_this_cycle)
+            g_max_Loss_touched_this_cycle = absLoss;
+      }
+      if(g_current_open_profit > 0.0)
+      {
+         if(g_current_open_profit > g_max_profit_touched_this_cycle)
+            g_max_profit_touched_this_cycle = g_current_open_profit;
+      }
+   }   fnc_Print(2, 1, StringFormat("Next Buy Lot: %.3f, Next Sell Lot: %.3f", g_NextBuyLotSize, g_NextSellLotSize));
 }
 
 //============================= Performance =============================//

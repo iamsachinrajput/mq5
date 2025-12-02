@@ -2,41 +2,86 @@
 #property strict
 #include "Utils.mqh"
 
+// Cached last panel text to avoid unnecessary updates
+string g_last_panel_text = "";
+color  g_last_panel_color = clrWhite;
+int    g_last_panel_lines = 0;
+
+// Lightweight panel updater: only updates label when text or color changes
+void fnc_CreateOrUpdatePanel(const string name, const string text, const color col, const int x, const int y, const int fontsize)
+{
+   // If nothing changed, skip the update
+   if(StringCompare(g_last_panel_text, text) == 0 && g_last_panel_color == col && ObjectFind(0, name) != -1)
+      return;
+
+   // Split text into lines and create one label per line so multi-line rendering is reliable
+   string lines[];
+   int count = StringSplit(text, '\n', lines);
+
+   // Create/update each line label
+   for(int i=0; i<count; i++)
+   {
+      string lineName = StringFormat("%s_line%d", name, i);
+      int lineY = y + i * (fontsize + 2);
+      if(ObjectFind(0, lineName) == -1)
+      {
+         ObjectCreate(0, lineName, OBJ_LABEL, 0, 0, 0);
+         ObjectSetInteger(0, lineName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+         ObjectSetInteger(0, lineName, OBJPROP_XDISTANCE, x);
+         ObjectSetInteger(0, lineName, OBJPROP_YDISTANCE, lineY);
+      }
+      ObjectSetInteger(0, lineName, OBJPROP_COLOR, col);
+      ObjectSetInteger(0, lineName, OBJPROP_FONTSIZE, fontsize);
+      ObjectSetString(0, lineName, OBJPROP_TEXT, lines[i]);
+   }
+
+   // Cleanup any old line objects beyond current count
+   for(int j=count; j<g_last_panel_lines; j++)
+   {
+      string oldName = StringFormat("%s_line%d", name, j);
+      if(ObjectFind(0, oldName) != -1)
+         ObjectDelete(0, oldName);
+   }
+
+   // Cache values
+   g_last_panel_text = text;
+   g_last_panel_color = col;
+   g_last_panel_lines = count;
+}
+
+// Main updater: produces a compact multi-line panel and updates only when needed
 void fnc_UpdateChartLabel(bool enableDisplay, bool enablePerf)
 {
    if(!enableDisplay) return;
 
+   // compute spread in price terms if possible
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double spread = 0.0;
+   if(ask > 0 && bid > 0) spread = (ask - bid);
+
    color profitColor = (g_TotalProfit >= 0) ? clrLime : clrRed;
 
+   // Compact multiline panel (fewer labels -> fewer object ops)
+   string panel = StringFormat(
+      "Status:%s Profit:%.2f EqProfit:%.2f\nNextLots B:%.2f S:%.2f Spread:%.5f\nOrders: B%d/%.2f S%d/%.2f Tot:%d NetLots:%.2f\nPerf: Last %.2f ms | Avg %.2f ms",
+      (g_TradingAllowed ? "ACTIVE" : "STOPPED"),
+      g_TotalProfit, g_equity_profit,
+      g_NextBuyLotSize, g_NextSellLotSize, spread,
+      g_openBuyCount, g_TotalBuyLots, g_openSellCount, g_TotalSellLots,
+      g_openTotalCount, g_TotalNetLots,
+      g_LastTickTime, g_AvgTickTime
+   );
 
+   // Use single panel label (left-upper corner)
+   fnc_CreateOrUpdatePanel("EA_Panel", panel, profitColor, 10, 20, 12);
 
-
-   fnc_CreateOrUpdateLabel("EA_Status",
-      StringFormat("Status: %s | Profit: %.0f / %.0f", (g_TradingAllowed ? "ACTIVE" : "STOPPED"), g_TotalProfit,g_equity_profit),
-      profitColor, 10, 20);
-
-   fnc_CreateOrUpdateLabel("EA_NextLots",
-      StringFormat("Next Buy: %.2f | Next Sell: %.2f", g_NextBuyLotSize, g_NextSellLotSize),
-      clrWhite, 10, 50);
-
-   fnc_CreateOrUpdateLabel("EA_Orders",
-      StringFormat("ORD: %dB %.2f | %dS %.2f | %dT %.2f | %dN %.2f", g_openBuyCount, g_TotalBuyLots, g_openSellCount, g_TotalSellLots,
-                   g_openTotalCount,(g_TotalBuyLots + g_TotalSellLots), (g_openBuyCount-g_openSellCount),g_TotalNetLots),
-      clrWhite, 10, 80);
-
-   fnc_CreateOrUpdateLabel("EA_Risk",
-      StringFormat("MaxPos:%d | MaxLots:%.2f | MaxLoss:%.2f | Target:%.2f",
-                   MaxPositions, MaxTotalLots, MaxLoss, DailyProfitTarget),
-      clrWhite, 10, 110);
-  
-    
-      
-
+   // Optional: performance label kept separate and updated only when perf enabled
    if(enablePerf)
    {
-      fnc_CreateOrUpdateLabel("EA_Perf",
-         StringFormat("Perf: Last %.2f ms | Avg %.2f ms", g_LastTickTime, g_AvgTickTime),
-         clrYellow, 10, 140);
+      string perfText = StringFormat("Perf: Last %.2f ms | Avg %.2f ms", g_LastTickTime, g_AvgTickTime);
+      // Reuse existing small label function for perf to avoid adding another cached variable
+      fnc_CreateOrUpdateLabel("EA_Perf", perfText, clrYellow, 10, 140);
    }
 }
 
