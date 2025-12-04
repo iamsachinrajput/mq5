@@ -67,6 +67,15 @@ double g_max_profit_overall = 0.0;
 // Track max profit of current cycle (resets on closeall)
 double g_max_profit_current_cycle = 0.0;
 
+//============================= Spread Tracking =============================//
+double g_current_spread_px = 0.0; // Current spread in price
+double g_max_spread_px = 0.0;     // Max spread touched
+
+//============================= Last 10 Closeall Profits =============================//
+#define MAX_CLOSEALL_HISTORY 10
+double g_closeall_profits[MAX_CLOSEALL_HISTORY] = {0};  // Circular buffer of last 10 closeall profits
+int g_closeall_count = 0;                               // Total closeall count (for circular indexing)
+
 //============================= Helpers =============================//
 bool IsEven(int L){ return (L % 2 == 0); }
 bool IsOdd(int L){ return (L % 2 != 0); }
@@ -110,6 +119,13 @@ void fnc_GetInfoFromOrdersTraversal()
    // Reset all totals
    g_TotalNetLots = g_TotalProfit = g_TotalBuyLots = g_TotalSellLots = 0.0;
    g_CountBuyOrders = g_CountSellOrders = 0;
+
+   // Track current spread
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   g_current_spread_px = (ask > 0 && bid > 0) ? (ask - bid) : 0.0;
+   if(g_current_spread_px > g_max_spread_px)
+      g_max_spread_px = g_current_spread_px;
 
    // Reset migrated stats
    g_current_orders_seq = "";
@@ -203,8 +219,10 @@ void fnc_GetInfoFromOrdersTraversal()
    double stepLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
    g_NextBuyLotSize = MathMax(g_NextBuyLotSize, minLot);
    g_NextBuyLotSize = MathRound(g_NextBuyLotSize / stepLot) * stepLot;
+   g_NextBuyLotSize = MathMin(g_NextBuyLotSize, MaxSingleLotSize); // Cap max lot size
    g_NextSellLotSize = MathMax(g_NextSellLotSize, minLot);
    g_NextSellLotSize = MathRound(g_NextSellLotSize / stepLot) * stepLot;
+   g_NextSellLotSize = MathMin(g_NextSellLotSize, MaxSingleLotSize); // Cap max lot size
 
    // Comments for display
    g_new_order_coments = StringFormat("%.0f,SC:%.0f,%.2f",
@@ -294,6 +312,15 @@ void fnc_GetInfoFromOrdersTraversal()
 // Function to reset cycle tracking when closeall is triggered
 void fnc_ResetCycleTracking()
 {
+   // Record the closeall profit before resetting
+   double closeallProfit = AccountInfoDouble(ACCOUNT_EQUITY) - g_last_closeall_equity;
+   int historyIndex = g_closeall_count % MAX_CLOSEALL_HISTORY;
+   g_closeall_profits[historyIndex] = closeallProfit;
+   g_closeall_count++;
+   
+   fnc_Print(DebugLevel, 1, StringFormat("[Utils] Cycle reset: Profit=%.2f | History Index=%d | Total Closealls=%d", 
+                                         closeallProfit, historyIndex, g_closeall_count));
+   
    g_last_closeall_equity = AccountInfoDouble(ACCOUNT_EQUITY);
    g_max_Loss_touched_this_cycle = 0.0;
    g_max_profit_touched_this_cycle = 0.0;
@@ -303,6 +330,43 @@ void fnc_ResetCycleTracking()
    g_short_close_bytrail_total_orders = 0;
    g_short_close_bytrail_total_lots = 0.0;
    fnc_Print(DebugLevel, 1, StringFormat("[Utils] Cycle reset: LastCloseAllEquity=%.2f", g_last_closeall_equity));
+}
+
+// Format last 10 closeall profits for display
+string fnc_GetLast10CloseallProfits()
+{
+   string result = "Last 10 Closealls: ";
+   
+   // If no closealls yet
+   if(g_closeall_count == 0)
+      return result + "None yet";
+   
+   // Determine how many to show (max 10)
+   int count = MathMin(g_closeall_count, MAX_CLOSEALL_HISTORY);
+   
+   // Show oldest to newest
+   for(int i = 0; i < count; i++)
+   {
+      // Calculate index in circular buffer (oldest first)
+      int idx;
+      if(g_closeall_count < MAX_CLOSEALL_HISTORY)
+      {
+         // Buffer not full yet, show from start
+         idx = i;
+      }
+      else
+      {
+         // Buffer is full, start from oldest (next position after latest)
+         idx = (g_closeall_count + i) % MAX_CLOSEALL_HISTORY;
+      }
+      
+      double profit = g_closeall_profits[idx];
+      result += StringFormat("%.0f", profit);
+      if(i < count - 1)
+         result += " | ";
+   }
+   
+   return result;
 }
 
 //============================= Performance =============================//
@@ -376,26 +440,61 @@ bool fnc_HasSameTypeOnLevel(int orderType, int L, double gapPx)
       ulong ticket = PositionGetTicket(i);
       if(PositionSelectByTicket(ticket))
       {
+         // Check symbol and magic to avoid false duplicates
+         if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+         if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
+         
          int type = (int)PositionGetInteger(POSITION_TYPE);
          double openPrice = NormalizeDouble(PositionGetDouble(POSITION_PRICE_OPEN), _Digits);
-         if(type == orderType && openPrice == levelPrice) return true;
+         
+         // Only check same parity levels: BUYs on even levels, SELLs on odd levels
+         int existingLevel = fnc_PriceLevelIndex(openPrice, gapPx);
+         bool sameParity = ((L % 2) == (existingLevel % 2));
+         
+         if(type == orderType && openPrice == levelPrice && sameParity) return true;
       }
    }
    return false;
 }
 
 // De-duplication: same type near level
-bool fnc_HasSameTypeNearLevel(int orderType, int L, double gapPx, int window)
+bool fnc_HasSameTypeNearLevel(int orderType, int L, double gapPx, int window, int debugLevel = 2)
 {
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
       if(PositionSelectByTicket(ticket))
       {
+         // Check symbol and magic to avoid false duplicates
+         if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+         if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
+         
          int type = (int)PositionGetInteger(POSITION_TYPE);
          double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
          int existingIndex = fnc_PriceLevelIndex(openPrice, gapPx);
-         if(type == orderType && MathAbs(existingIndex - L) <= window) return true;
+         int levelDistance = (int)MathAbs(existingIndex - L);
+         
+         // Only check same parity levels: BUYs on even levels, SELLs on odd levels
+         bool sameParity = ((L % 2) == (existingIndex % 2));
+         
+         if(type == orderType && levelDistance <= window && sameParity)
+         {
+            double checkingPrice = fnc_LevelPrice(L, gapPx);
+            double priceDistance = MathAbs(openPrice - checkingPrice);
+            double gapPoints = gapPx / _Point;
+            fnc_Print(debugLevel, 1, StringFormat("⚠️ DUPLICATE FOUND: Ticket #%I64u | Type:%s | OpenPrice:%.5f | ExistingLevel:%d | CheckingLevel:%d (Price:%.5f) | LevelDist:%d (window:%d) | PriceDist:%.2f pts (gap:%.2f)",
+                                                   ticket, 
+                                                   (type == POSITION_TYPE_BUY ? "BUY" : "SELL"),
+                                                   openPrice,
+                                                   existingIndex,
+                                                   L,
+                                                   checkingPrice,
+                                                   levelDistance,
+                                                   window,
+                                                   priceDistance / _Point,
+                                                   gapPoints));
+            return true;
+         }
       }
    }
    return false;

@@ -4,8 +4,6 @@
 #include "Utils.mqh"
 #include "RiskManagement.mqh"
 
-input int Magic = 12345; // Global Magic number for all trades
-
 void fnc_CheckAndPlaceOrders(double currentPrice, double gapPx, int debugLevel)
 {
    if(!g_TradingAllowed)

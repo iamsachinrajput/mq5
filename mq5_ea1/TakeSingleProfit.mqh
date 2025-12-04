@@ -13,7 +13,6 @@ input double TakeProfitPer01Lot = 10.0; // Example: close if profit per 0.01 lot
 void fnc_CloseOrdersBySingleProfit()
 {
    // Skip single position closing if total trailing is active
-   extern bool g_total_trailing_started;
    if(g_total_trailing_started)
    {
       fnc_Print(DebugLevel, 3, "[TakeSingleProfit] Skipped: Total trailing is active.");
@@ -100,6 +99,9 @@ struct TrailInfo
 {
    ulong  ticket;
    double highestProfitPer01Lot;
+   double startTakeProfitPer01Lot;  // The threshold that triggered tracking
+   double halfValuePer01Lot;        // Half of the threshold (lock-in minimum)
+   bool   trailingActive;           // Trailing only starts when profit falls to half value
 };
 
 // Global array to store trail state for each ticket
@@ -118,12 +120,15 @@ int findTrailIndex(ulong tk)
 }
 
 // Helper: add a new TrailInfo entry
-void addTrailInfo(ulong tk, double highestProfitPer01Lot)
+void addTrailInfo(ulong tk, double highestProfitPer01Lot, double startTakeProfitPer01Lot, double halfValuePer01Lot)
 {
    int n = ArraySize(g_trails);
    ArrayResize(g_trails, n+1);
    g_trails[n].ticket = tk;
    g_trails[n].highestProfitPer01Lot = highestProfitPer01Lot;
+   g_trails[n].startTakeProfitPer01Lot = startTakeProfitPer01Lot;
+   g_trails[n].halfValuePer01Lot = halfValuePer01Lot;
+   g_trails[n].trailingActive = false;  // Trailing not active until profit drops to half value
 }
 
 // Helper: remove TrailInfo by index
@@ -140,10 +145,9 @@ void removeTrailInfo(int index)
    ArrayResize(g_trails, n-1);
 }
 
-void fnc_TrailAndCloseSingleByProfit(const double startTakeProfitPer01Lot  = TakeProfitPer01Lot, const double halfValuePer01Lot = TakeProfitPer01Lot/2)
+void fnc_TrailAndCloseSingleByProfit()
 {
    // Skip single position trailing if total trailing is active
-   extern bool g_total_trailing_started;
    if(g_total_trailing_started)
    {
       fnc_Print(DebugLevel, 3, "[TrailSingle] Skipped: Total trailing is active.");
@@ -186,54 +190,100 @@ void fnc_TrailAndCloseSingleByProfit(const double startTakeProfitPer01Lot  = Tak
          profitPer01Lot = (profit / lots) * 0.01;
       }
 
+      // Log only profitable orders
+      if(profit > 0)
+      {
+         fnc_Print(DebugLevel, 2, StringFormat("[TrailSingle] Ticket:%I64u Type:%s Lots:%.2f Profit:%.2f PPL:%.2f",
+                                                ticket, (type == POSITION_TYPE_BUY ? "BUY" : "SELL"), lots, profit, profitPer01Lot));
+      }
+
       // Find existing TrailInfo for this ticket
       int idx = findTrailIndex(ticket);
 
       // If profit per 0.01 lot >= startTakeProfitPer01Lot and not yet tracking
-      if(profitPer01Lot >= startTakeProfitPer01Lot && idx < 0)
+      if(profitPer01Lot >= TakeProfitPer01Lot && idx < 0)
       {
-         // Start tracking
-         addTrailInfo(ticket, profitPer01Lot);
+         // Start tracking (but trailing not active yet - waiting for lock-in)
+         double halfValue = TakeProfitPer01Lot / 2.0;
+         addTrailInfo(ticket, profitPer01Lot, TakeProfitPer01Lot, halfValue);
          idx = findTrailIndex(ticket);
-         fnc_Print(DebugLevel, 2, StringFormat("[TrailSingle] Start tracking Ticket:%I64u at %.2f", ticket, profitPer01Lot));
+         fnc_Print(DebugLevel, 1, StringFormat("[TrailSingle] ✓ START TRACK #%I64u | PPL:%.2f >= Threshold:%.2f | TrailGap:%.2f | Will trail at:%.2f | CloseGap:%.2f",
+                                                ticket, profitPer01Lot, TakeProfitPer01Lot, halfValue, halfValue, halfValue));
       }
 
       // If we are tracking this ticket
       if(idx >= 0)
       {
          double highest = g_trails[idx].highestProfitPer01Lot;
+         double halfValue = g_trails[idx].halfValuePer01Lot;
+         bool isTrailing = g_trails[idx].trailingActive;
 
          // Update highest if current is higher
          if(profitPer01Lot > highest)
          {
             g_trails[idx].highestProfitPer01Lot = profitPer01Lot;
             highest = profitPer01Lot;
-            fnc_Print(DebugLevel, 2, StringFormat("[TrailSingle] Update Ticket:%I64u highest=%.4f", ticket, highest));
+            double closeAtLevel = highest - halfValue;
+            fnc_Print(DebugLevel, 1, StringFormat("[TrailSingle] ⬆ PEAK UPDATE #%I64u | NewPeak:%.2f | WillCloseAt:%.2f", 
+                                                   ticket, highest, closeAtLevel));
          }
 
-         // Check if profit dropped by halfValuePer01Lot from highest
-         double drop = highest - profitPer01Lot;
-         if(drop >= halfValuePer01Lot)
+         // Show status for tracked orders (only if in profit)
+         if(profit > 0)
          {
-            fnc_Print(DebugLevel, 1, StringFormat("[TrailSingle] Closing Ticket:%I64u (highest:%.4f current:%.4f half:%.4f)",
-                                                   ticket, highest, profitPer01Lot, halfValuePer01Lot));
-
-            bool ok = ctrade.PositionClose(ticket);
-            if(ok)
+            double closeAtLevel = highest - halfValue;
+            if(!isTrailing)
             {
-               fnc_Print(DebugLevel, 1, StringFormat("[TrailSingle] Successfully closed Ticket:%I64u Profit:%.2f", ticket, profit));
-               // Update stats
-               g_short_close_bytrail_total_profit += profit;
-               g_short_close_bytrail_total_orders++;
-               g_short_close_bytrail_total_lots += lots;
-
-               // Remove from trail array
-               removeTrailInfo(idx);
+               fnc_Print(DebugLevel, 2, StringFormat("[TrailSingle] 📊 WAITING #%I64u | PPL:%.2f | Peak:%.2f | TrailAt:%.2f (drops %.2f from peak)",
+                                                      ticket, profitPer01Lot, highest, halfValue, highest - halfValue));
             }
             else
             {
-               int err = GetLastError();
-               fnc_Print(DebugLevel, 0, StringFormat("[TrailSingle] Failed to close Ticket:%I64u Err:%d", ticket, err));
+               double currentDrop = highest - profitPer01Lot;
+               fnc_Print(DebugLevel, 2, StringFormat("[TrailSingle] 📈 TRAILING #%I64u | PPL:%.2f | Peak:%.2f | Drop:%.2f | CloseAt:%.2f (drop %.2f)",
+                                                      ticket, profitPer01Lot, highest, currentDrop, closeAtLevel, halfValue));
+            }
+         }
+
+         // Check if profit has dropped from peak to the activation point (halfValue from the START threshold)
+         // Once profit reaches the threshold and builds a peak, activate trailing when it drops back to halfValue
+         double activationPoint = g_trails[idx].startTakeProfitPer01Lot / 2.0;
+         if(!isTrailing && profitPer01Lot <= activationPoint)
+         {
+            g_trails[idx].trailingActive = true;
+            isTrailing = true;
+            double closeAtLevel = highest - halfValue;
+            fnc_Print(DebugLevel, 1, StringFormat("[TrailSingle] 🔥 TRAIL ACTIVE #%I64u | PPL:%.2f dropped to activation:%.2f | Peak:%.2f | WillClose at:%.2f (when drops %.2f from peak)",
+                                                   ticket, profitPer01Lot, activationPoint, highest, closeAtLevel, halfValue));
+         }
+
+         // Only close if trailing is active AND profit drops by halfValue from the highest
+         if(isTrailing)
+         {
+            double drop = highest - profitPer01Lot;
+            if(drop >= halfValue)
+            {
+               double finalProfit = profit;
+               fnc_Print(DebugLevel, 1, StringFormat("[TrailSingle] 🛑 CLOSING #%I64u | Peak:%.2f → Current:%.2f | Drop:%.2f >= Gap:%.2f | Profit:$%.2f",
+                                                      ticket, highest, profitPer01Lot, drop, halfValue, finalProfit));
+
+               bool ok = ctrade.PositionClose(ticket);
+               if(ok)
+               {
+                  fnc_Print(DebugLevel, 1, StringFormat("[TrailSingle] ✅ Closed #%I64u | Banked:$%.2f", ticket, finalProfit));
+                  // Update stats
+                  g_short_close_bytrail_total_profit += profit;
+                  g_short_close_bytrail_total_orders++;
+                  g_short_close_bytrail_total_lots += lots;
+
+                  // Remove from trail array
+                  removeTrailInfo(idx);
+               }
+               else
+               {
+                  int err = GetLastError();
+                  fnc_Print(DebugLevel, 0, StringFormat("[TrailSingle] ❌ FAILED #%I64u Err:%d", ticket, err));
+               }
             }
          }
       }

@@ -23,6 +23,12 @@ input double TotalProfitTarget      = 500.0; // e.g., USD 500 (for legacy only)
 // Close method enum selection
 input CLOSE_METHOD CloseMethodType  = CLOSE_ALL; // method passed to fnc_CloseAllOrdersOfType
 
+// Trail gap control inputs
+input double MaxTrailGap            = 250.0;  // Maximum trail gap (absolute cap)
+input double BaseTrailGapPct        = 0.50;   // Base trail gap % for low profits (50%)
+input double MinTrailGapPct         = 0.20;   // Minimum trail gap % for high profits (20%)
+input double GapTransitionProfit    = 1000.0; // Profit level where gap transitions from base to min %
+
 //============================ Globals =============================//
 // NOTE: We read current total profit from a global set by Utils.mqh.
 // Ensure Utils.mqh maintains this variable each tick (e.g., in fnc_GetInfoFromOrdersTraversal()).
@@ -106,9 +112,39 @@ void fnc_TrailTotalProfit()
    if(calculatedStartValue > 0.0)
    {
       g_total_starttrail = calculatedStartValue;
-      g_total_trailgap = MathMax(0.0, g_total_starttrail * 0.5); // Always calculate gap
+      
+      // Calculate adaptive trail gap with diminishing percentage and absolute cap
+      double gapPct = BaseTrailGapPct;
+      
+      // If profit is high, reduce gap percentage (linear interpolation)
+      if(curTotalProfit > 0.0 && curTotalProfit > calculatedStartValue)
+      {
+         if(curTotalProfit >= GapTransitionProfit)
+         {
+            // Use minimum percentage for high profits
+            gapPct = MinTrailGapPct;
+         }
+         else
+         {
+            // Linear transition from base to min percentage
+            double ratio = curTotalProfit / GapTransitionProfit;
+            gapPct = BaseTrailGapPct - (ratio * (BaseTrailGapPct - MinTrailGapPct));
+         }
+      }
+      
+      // Calculate gap with adaptive percentage
+      double calculatedGap = g_total_starttrail * gapPct;
+      
+      // Apply absolute maximum cap
+      g_total_trailgap = MathMin(calculatedGap, MaxTrailGap);
+      g_total_trailgap = MathMax(0.0, g_total_trailgap);
+      
       // Expected next close is starttrail - gap (if we hit starttrail and retrace by gap)
       g_total_next_closeall_expected = g_total_starttrail - g_total_trailgap;
+      
+      fnc_Print(DebugLevel, 3, StringFormat(
+         "[TrailGap] curProfit=%.2f starttrail=%.2f gapPct=%.2f%% calcGap=%.2f finalGap=%.2f (cap=%.2f)",
+         curTotalProfit, g_total_starttrail, gapPct*100, calculatedGap, g_total_trailgap, MaxTrailGap));
    }
 
    // If trail not started, check trigger
