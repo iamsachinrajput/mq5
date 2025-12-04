@@ -54,6 +54,18 @@ int GLO = 0; // losing orders count
 double g_max_Loss_touched_this_cycle = 0.0;
 // Max profit touched in current cycle (after last close-all)
 double g_max_profit_touched_this_cycle = 0.0;
+// Track equity at last closeall event to calculate cycle profit
+double g_last_closeall_equity = 0.0;
+// Track opening balance for total profit calculation
+double g_opening_balance = 0.0;
+// Track max loss overall (from beginning)
+double g_max_loss_overall = 0.0;
+// Track max loss of current cycle (resets on closeall)
+double g_max_loss_current_cycle = 0.0;
+// Track max profit overall (from beginning)
+double g_max_profit_overall = 0.0;
+// Track max profit of current cycle (resets on closeall)
+double g_max_profit_current_cycle = 0.0;
 
 //============================= Helpers =============================//
 bool IsEven(int L){ return (L % 2 == 0); }
@@ -200,27 +212,88 @@ void fnc_GetInfoFromOrdersTraversal()
                                       g_short_close_bytrail_total_profit,
                                       g_netLots);
 
-   // Update cycle max loss touched: track absolute largest negative open-profit seen
-   if(g_openTotalCount == 0)
+   // Track max loss/profit from open profit (used for trail start calculation)
+   if(g_openTotalCount > 0)
    {
-      // No positions -> reset cycle max loss and max profit
-      g_max_Loss_touched_this_cycle = 0.0;
-      g_max_profit_touched_this_cycle = 0.0;
-   }
-   else
-   {
+      // Track max loss from negative open profit
       if(g_current_open_profit < 0.0)
       {
          double absLoss = MathAbs(g_current_open_profit);
          if(absLoss > g_max_Loss_touched_this_cycle)
             g_max_Loss_touched_this_cycle = absLoss;
       }
+      // Track max profit from positive open profit
       if(g_current_open_profit > 0.0)
       {
          if(g_current_open_profit > g_max_profit_touched_this_cycle)
             g_max_profit_touched_this_cycle = g_current_open_profit;
       }
-   }   fnc_Print(2, 1, StringFormat("Next Buy Lot: %.3f, Next Sell Lot: %.3f", g_NextBuyLotSize, g_NextSellLotSize));
+   }
+
+   // Initialize opening balance on first run
+   if(g_opening_balance == 0.0)
+      g_opening_balance = AccountInfoDouble(ACCOUNT_BALANCE);
+
+   // Initialize last closeall equity on first run (if not set)
+   if(g_last_closeall_equity == 0.0)
+      g_last_closeall_equity = AccountInfoDouble(ACCOUNT_EQUITY);
+
+   // Track max loss and max profit - overall and current cycle (based on equity)
+   double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+   
+   // Track max loss (negative equity movements)
+   double currentDrawdown = currentEquity - g_opening_balance;
+   if(currentDrawdown < 0.0)
+   {
+      double absDrawdown = MathAbs(currentDrawdown);
+      if(absDrawdown > g_max_loss_overall)
+         g_max_loss_overall = absDrawdown;
+   }
+   
+   double cycleDrawdown = currentEquity - g_last_closeall_equity;
+   if(cycleDrawdown < 0.0)
+   {
+      double absCycleDrawdown = MathAbs(cycleDrawdown);
+      if(absCycleDrawdown > g_max_loss_current_cycle)
+         g_max_loss_current_cycle = absCycleDrawdown;
+   }
+   
+   // Track max profit (positive equity movements)
+   double currentProfitFromStart = currentEquity - g_opening_balance;
+   if(currentProfitFromStart > 0.0)
+   {
+      if(currentProfitFromStart > g_max_profit_overall)
+         g_max_profit_overall = currentProfitFromStart;
+   }
+   
+   double cycleProfitFromLastClose = currentEquity - g_last_closeall_equity;
+   if(cycleProfitFromLastClose > 0.0)
+   {
+      if(cycleProfitFromLastClose > g_max_profit_current_cycle)
+         g_max_profit_current_cycle = cycleProfitFromLastClose;
+   }
+   
+   // Ensure overall values are always >= current cycle values
+   if(g_max_loss_current_cycle > g_max_loss_overall)
+      g_max_loss_overall = g_max_loss_current_cycle;
+   if(g_max_profit_current_cycle > g_max_profit_overall)
+      g_max_profit_overall = g_max_profit_current_cycle;
+
+   fnc_Print(2, 1, StringFormat("Next Buy Lot: %.3f, Next Sell Lot: %.3f", g_NextBuyLotSize, g_NextSellLotSize));
+}
+
+// Function to reset cycle tracking when closeall is triggered
+void fnc_ResetCycleTracking()
+{
+   g_last_closeall_equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   g_max_Loss_touched_this_cycle = 0.0;
+   g_max_profit_touched_this_cycle = 0.0;
+   g_max_loss_current_cycle = 0.0;
+   g_max_profit_current_cycle = 0.0;
+   g_short_close_bytrail_total_profit = 0.0;
+   g_short_close_bytrail_total_orders = 0;
+   g_short_close_bytrail_total_lots = 0.0;
+   fnc_Print(DebugLevel, 1, StringFormat("[Utils] Cycle reset: LastCloseAllEquity=%.2f", g_last_closeall_equity));
 }
 
 //============================= Performance =============================//

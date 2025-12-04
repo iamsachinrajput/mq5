@@ -157,6 +157,9 @@ void fnc_TrailTotalProfit()
       // Close positions using the configured close method (ALL, BUY, SELL, PROFIT, LOSS, MAJORITY, MINORITY)
       fnc_CloseAllOrdersOfType(CloseMethodType);
 
+      // Reset cycle tracking for fresh cycle
+      fnc_ResetCycleTracking();
+
       // Stats
       g_total_trail_last_close_profit = curTotalProfit;
       g_total_trail_close_count++;
