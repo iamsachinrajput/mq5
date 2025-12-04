@@ -1,3 +1,4 @@
+
 //+------------------------------------------------------------------+
 //| TrailTotalProfit.mqh                                            |
 //| Trails the aggregate open profit across all EA positions.       |
@@ -88,64 +89,56 @@ void fnc_TrailTotalProfit()
       return;
    }
 
-   // Read current total cycle profit (closed + open) from equity
-   double curTotalProfit = AccountInfoDouble(ACCOUNT_EQUITY) - g_last_closeall_equity;
+   // Read current total open profit (account currency) from Utils global
+   double curTotalProfit = g_TotalProfit;
 
    // Track if we've ever touched a loss in this cycle
    if(curTotalProfit < 0.0)
       g_total_touched_loss_this_cycle = true;
 
-   // ALWAYS calculate starttrail value based on current cycle max loss/profit
-   double maxLoss = g_max_loss_current_cycle;
-   double maxProfit = g_max_profit_current_cycle;
-   double startLoss = maxLoss * TrailStartPctOfMaxLoss;
-   double startProfit = maxProfit * TrailStartPctOfMaxProfit;
-   double calculatedStartValue = MathMax(startLoss, startProfit);
-   
-   // Update starttrail value (always visible, even before trail starts)
-   if(calculatedStartValue > 0.0)
-   {
-      g_total_starttrail = calculatedStartValue;
-      g_total_trailgap = MathMax(0.0, g_total_starttrail * 0.5); // Always calculate gap
-      // Expected next close is starttrail - gap (if we hit starttrail and retrace by gap)
-      g_total_next_closeall_expected = g_total_starttrail - g_total_trailgap;
-   }
-
    // If trail not started, check trigger
    if(!g_total_trailing_started)
    {
+      // Use equity-based max loss/profit for current cycle
+      double maxLoss = g_max_loss_current_cycle;
+      double maxProfit = g_max_profit_current_cycle;
+      
       fnc_Print(DebugLevel, 2, StringFormat(
-         "[TrailTotalProfit] Check: cur=%.2f starttrail=%.2f maxLoss=%.2f maxProfit=%.2f touchedLoss=%s", 
-         curTotalProfit, g_total_starttrail, maxLoss, maxProfit, (g_total_touched_loss_this_cycle ? "YES" : "NO")));
+         "[TrailTotalProfit] Check: cur=%.2f maxLoss=%.2f maxProfit=%.2f touchedLoss=%s", 
+         curTotalProfit, maxLoss, maxProfit, (g_total_touched_loss_this_cycle ? "YES" : "NO")));
       
       bool shouldStartTrail = false;
+      double startLoss = maxLoss * TrailStartPctOfMaxLoss;
+      double startProfit = maxProfit * TrailStartPctOfMaxProfit;
+      double startValue = MathMax(startLoss, startProfit);
       
-      if(curTotalProfit > g_total_starttrail && g_total_starttrail > 0.0)
+      if(curTotalProfit > startValue && startValue > 0.0)
       {
          shouldStartTrail = true;
          fnc_Print(DebugLevel, 1, StringFormat(
-            "[TrailTotalProfit] START TRAIL: cur=%.2f > starttrail=%.2f (maxLoss*%.2f=%.2f, maxProfit*%.2f=%.2f)",
-            curTotalProfit, g_total_starttrail, TrailStartPctOfMaxLoss, startLoss, TrailStartPctOfMaxProfit, startProfit));
+            "[TrailTotalProfit] START TRAIL: cur=%.2f > startValue=%.2f (maxLoss*%.2f=%.2f, maxProfit*%.2f=%.2f)",
+            curTotalProfit, startValue, TrailStartPctOfMaxLoss, startLoss, TrailStartPctOfMaxProfit, startProfit));
       }
 
       if(shouldStartTrail)
       {
          g_total_trailing_started = true;
-         // Gap already calculated above
+         g_total_starttrail       = startValue;
+         g_total_trailgap         = MathMax(0.0, g_total_starttrail * 0.5); // 50% of start value
          g_total_peakprofit       = curTotalProfit;
          g_total_floorprofit      = g_total_peakprofit - g_total_trailgap;
-         g_total_next_closeall_expected = g_total_floorprofit; // update to actual floor
+         g_total_next_closeall_expected = g_total_floorprofit; // current expected close profit
 
          fnc_Print(DebugLevel, 1, StringFormat(
-            "[TrailTotalProfit] Trail initiated: start=%.2f gap=%.2f peak=%.2f floor=%.2f expected=%.2f",
-            g_total_starttrail, g_total_trailgap, g_total_peakprofit, g_total_floorprofit, g_total_next_closeall_expected));
+            "[TrailTotalProfit] Trail initiated: start=%.2f gap=%.2f peak=%.2f floor=%.2f",
+            g_total_starttrail, g_total_trailgap, g_total_peakprofit, g_total_floorprofit));
       }
       else
       {
          // Not started yet; just log at low verbosity
          fnc_Print(DebugLevel, 3, StringFormat(
-            "[TrailTotalProfit] Waiting to start: cur=%.2f starttrail=%.2f maxL=%.2f maxP=%.2f", 
-            curTotalProfit, g_total_starttrail, maxLoss, maxProfit));
+            "[TrailTotalProfit] Waiting to start: cur=%.2f maxL=%.2f maxP=%.2f touchedLoss=%s", 
+            curTotalProfit, maxLoss, maxProfit, (g_total_touched_loss_this_cycle ? "YES" : "NO")));
       }
       return; // trail not active unless started
    }
