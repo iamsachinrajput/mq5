@@ -76,12 +76,12 @@ void fnc_UpdateChartLabel(bool enableDisplay, bool enablePerf)
 
    // Compact multiline panel (fewer labels -> fewer object ops)
    string panel = StringFormat(
-      "Status:%s | Total Profit: %.2f (from opening)\nCycle Profit: Closed:%.2f Open:%.2f Total:%.2f (from last closeall)\nMaxLoss: %.2f/%.2f | MaxProfit: %.2f/%.2f\nTrail: Start:%.2f Gap:%.2f Floor:%.2f\nNextLots B:%.2f S:%.2f | Spread:%.5f\nOrders: B%d/%.2f S%d/%.2f Tot:%d NetLots:%.2f\nPerf: Last %.2f ms | Avg %.2f ms",
+      "Status:%s | Total Profit: %.2f (from opening)\nCycle Profit: Closed:%.2f Open:%.2f Total:%.2f (from last closeall)\nMaxLoss: %.2f/%.2f | MaxProfit: %.2f/%.2f\nTrail: Start:%.2f Gap:%.2f Floor:%.2f | Expected Next Close:%.2f\nNextLots B:%.2f S:%.2f | Spread:%.5f\nOrders: B%d/%.2f S%d/%.2f Tot:%d NetLots:%.2f\nPerf: Last %.2f ms | Avg %.2f ms",
       (g_TradingAllowed ? "ACTIVE" : "STOPPED"),
       totalProfitFromStart,
       cycleClosedProfit, cycleOpenProfit, cycleTotalProfit,
       g_max_loss_current_cycle, g_max_loss_overall, g_max_profit_current_cycle, g_max_profit_overall,
-      g_total_firstprofit, g_total_trailprofit, g_total_floorprofit,
+      g_total_firstprofit, g_total_trailprofit, g_total_floorprofit, g_total_next_closeall_expected,
       g_NextBuyLotSize, g_NextSellLotSize, spread,
       g_openBuyCount, g_TotalBuyLots, g_openSellCount, g_TotalSellLots,
       g_openTotalCount, g_TotalNetLots,

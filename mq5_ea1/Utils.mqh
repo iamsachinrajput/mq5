@@ -228,6 +228,15 @@ void fnc_GetInfoFromOrdersTraversal()
          if(g_current_open_profit > g_max_profit_touched_this_cycle)
             g_max_profit_touched_this_cycle = g_current_open_profit;
       }
+      
+      // Initialize max loss/profit on first positions opened
+      if(g_max_Loss_touched_this_cycle == 0.0 && g_max_profit_touched_this_cycle == 0.0)
+      {
+         if(g_current_open_profit > 0.0)
+            g_max_profit_touched_this_cycle = g_current_open_profit;
+         else if(g_current_open_profit < 0.0)
+            g_max_Loss_touched_this_cycle = MathAbs(g_current_open_profit);
+      }
    }
 
    // Initialize opening balance on first run

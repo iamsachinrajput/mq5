@@ -19,8 +19,8 @@ input bool   EnableTrailTotalProfit = true;
 input double TrailTargetPctOfMaxLoss = 0.10; // 10% of max loss touched
 // Legacy input (kept for backward compat, but now derived from max loss)
 input double TotalProfitTarget      = 500.0; // e.g., USD 500 (overridden if max loss exists)
-// Close method: "ALL", "BUY", "SELL", "PROFIT", "LOSS", "MAJORITY", "MINORITY"
-input string CloseMethodType        = "ALL"; // method passed to fnc_CloseAllOrdersOfType
+// Close method enum selection
+input CLOSE_METHOD CloseMethodType  = CLOSE_ALL; // method passed to fnc_CloseAllOrdersOfType
 
 //============================ Globals =============================//
 // NOTE: We read current total profit from a global set by Utils.mqh.
@@ -35,6 +35,7 @@ double g_total_trailprofit      = 0.0; // half of target, used as trail amount
 double g_total_floorprofit      = 0.0; // peak - trail; guaranteed take if trail hits
 double g_total_peakprofit       = 0.0; // highest total profit observed since trail start
 double g_total_cycle_max_loss   = 0.0; // max loss touched in current cycle (after last closeall)
+double g_total_next_closeall_expected = 0.0; // expected profit if closeall triggered at current floor
 
 // Optional: stats
 double g_total_trail_last_close_profit = 0.0;
@@ -94,8 +95,16 @@ void fnc_TrailTotalProfit()
       double maxProfit = g_max_profit_touched_this_cycle;
       double maxExtent = MathMax(maxLoss, maxProfit); // use whichever is bigger
       
+      fnc_Print(DebugLevel, 2, StringFormat(
+         "[TrailTotalProfit] TRIGGER CHECK: maxLoss=%.2f maxProfit=%.2f maxExtent=%.2f", 
+         maxLoss, maxProfit, maxExtent));
+      
       double calculatedTarget = maxExtent * TrailTargetPctOfMaxLoss;
       double target = MathMax(calculatedTarget, TotalProfitTarget); // use max of calculated or legacy
+
+      fnc_Print(DebugLevel, 2, StringFormat(
+         "[TrailTotalProfit] Target calculation: calculated=%.2f (%.2f%% of %.2f), legacy=%.2f, final target=%.2f", 
+         calculatedTarget, TrailTargetPctOfMaxLoss * 100.0, maxExtent, TotalProfitTarget, target));
 
       if(curTotalProfit >= target)
       {
@@ -104,6 +113,7 @@ void fnc_TrailTotalProfit()
          g_total_trailprofit      = MathMax(0.0, g_total_firstprofit * 0.5); // half of target
          g_total_peakprofit       = curTotalProfit;
          g_total_floorprofit      = g_total_peakprofit - g_total_trailprofit;
+         g_total_next_closeall_expected = g_total_floorprofit; // current expected close profit
 
          fnc_Print(DebugLevel, 1, StringFormat(
             "[TrailTotalProfit] START: cur=%.2f maxLoss=%.2f maxProfit=%.2f maxExtent=%.2f target=%.2f trail=%.2f floor=%.2f",
@@ -112,7 +122,7 @@ void fnc_TrailTotalProfit()
       else
       {
          // Not started yet; just log at low verbosity
-         fnc_Print(DebugLevel, 3, StringFormat(
+         fnc_Print(DebugLevel, 2, StringFormat(
             "[TrailTotalProfit] Waiting: cur=%.2f < target=%.2f (maxLoss=%.2f maxProfit=%.2f)", curTotalProfit, target, maxLoss, maxProfit));
       }
       return; // trail not active unless started
@@ -123,6 +133,7 @@ void fnc_TrailTotalProfit()
    {
       g_total_peakprofit  = curTotalProfit;
       g_total_floorprofit = g_total_peakprofit - g_total_trailprofit;
+      g_total_next_closeall_expected = g_total_floorprofit; // update expected close profit
 
       fnc_Print(DebugLevel, 2, StringFormat(
          "[TrailTotalProfit] PEAK UPDATE: peak=%.2f floor=%.2f (trail=%.2f)",
@@ -171,5 +182,6 @@ void fnc_TrailTotalProfit()
       g_total_floorprofit      = 0.0;
       g_total_peakprofit       = 0.0;
       g_total_cycle_max_loss   = 0.0; // reset cycle tracking for next cycle
+      g_total_next_closeall_expected = 0.0; // reset expected profit
    }
 }

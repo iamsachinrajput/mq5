@@ -7,10 +7,21 @@
 #include "Utils.mqh"
 
 
-// whatType options: "ALL", "BUY", "SELL", "PROFIT", "LOSS", "MAJORITY", "MINORITY"
-// - "MAJORITY": closes orders of the side with the majority net lots (e.g., net>0 -> close BUYs)
-// - "MINORITY": closes orders of the side with the minority net lots
-void fnc_CloseAllOrdersOfType(string whatType)
+//============================ Enum ==============================//
+enum CLOSE_METHOD
+{
+   CLOSE_ALL,      // Close all EA positions
+   CLOSE_BUY,      // Close only BUY positions
+   CLOSE_SELL,     // Close only SELL positions
+   CLOSE_PROFIT,   // Close only profitable positions
+   CLOSE_LOSS,     // Close only losing positions
+   CLOSE_MAJORITY, // Close the side with majority net lots
+   CLOSE_MINORITY  // Close the side with minority net lots
+};
+
+//============================ Function ==========================//
+// whatType: CLOSE_METHOD enum value
+void fnc_CloseAllOrdersOfType(CLOSE_METHOD whatType)
 {
    int total = PositionsTotal();
    if(total <= 0)
@@ -19,13 +30,13 @@ void fnc_CloseAllOrdersOfType(string whatType)
       return;
    }
 
-   fnc_Print(DebugLevel, 1, StringFormat("[CloseAllOrdersOfType] Closing type: %s | Total positions: %d", whatType, total));
+   fnc_Print(DebugLevel, 1, StringFormat("[CloseAllOrdersOfType] Closing type: %d | Total positions: %d", (int)whatType, total));
 
    // prepare majority/minority decision if requested
    int majoritySide = -1; // POSITION_TYPE_BUY or POSITION_TYPE_SELL
    int minoritySide = -1;
    double net = g_netLots; // prefer per-traversal net (bLots - sLots)
-   if(whatType == "MAJORITY" || whatType == "MINORITY")
+   if(whatType == CLOSE_MAJORITY || whatType == CLOSE_MINORITY)
    {
       if(MathAbs(net) < 1e-12)
       {
@@ -56,19 +67,19 @@ void fnc_CloseAllOrdersOfType(string whatType)
 
       bool shouldClose = false;
 
-      if(whatType == "ALL")
+      if(whatType == CLOSE_ALL)
          shouldClose = true;
-      else if(whatType == "BUY" && type == POSITION_TYPE_BUY)
+      else if(whatType == CLOSE_BUY && type == POSITION_TYPE_BUY)
          shouldClose = true;
-      else if(whatType == "SELL" && type == POSITION_TYPE_SELL)
+      else if(whatType == CLOSE_SELL && type == POSITION_TYPE_SELL)
          shouldClose = true;
-      else if(whatType == "PROFIT" && profit > 0)
+      else if(whatType == CLOSE_PROFIT && profit > 0)
          shouldClose = true;
-      else if(whatType == "LOSS" && profit < 0)
+      else if(whatType == CLOSE_LOSS && profit < 0)
          shouldClose = true;
-      else if(whatType == "MAJORITY" && type == majoritySide)
+      else if(whatType == CLOSE_MAJORITY && type == majoritySide)
          shouldClose = true;
-      else if(whatType == "MINORITY" && type == minoritySide)
+      else if(whatType == CLOSE_MINORITY && type == minoritySide)
          shouldClose = true;
 
       if(shouldClose)
