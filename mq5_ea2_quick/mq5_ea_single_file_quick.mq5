@@ -21,6 +21,7 @@ input double DailyProfitTarget = 5000.0;  // Daily profit target to stop trading
 // Profit Trailing
 input bool   EnableTotalTrailing = true;  // Enable total profit trailing
 input double TrailStartPct = 0.10;        // Start trail at % of max loss (0.10 = 10%)
+input double TrailProfitPct = 0.85;       // Start trail at % of max profit (0.85 = 85%)
 input double TrailGapPct = 0.50;          // Trail gap as % of start value (0.50 = 50%)
 input double MaxTrailGap = 250.0;         // Maximum trail gap (absolute cap)
 
@@ -61,6 +62,7 @@ double g_trailGap = 0.0;
 double g_trailPeak = 0.0;
 double g_trailFloor = 0.0;
 double g_lastCloseEquity = 0.0;
+double g_startingEquity = 0.0;      // EA start equity for overall P/L tracking
 double g_maxLossCycle = 0.0;
 double g_maxProfitCycle = 0.0;
 
@@ -68,9 +70,11 @@ double g_maxProfitCycle = 0.0;
 struct SingleTrail {
    ulong  ticket;
    double peakPPL;
+   double activePeak;    // Peak AFTER activation (for trailing calculation)
    double threshold;
    double gap;
    bool   active;
+   int    lastLogTick;   // Track last log tick to avoid spam
 };
 SingleTrail g_trails[];
 
@@ -80,7 +84,7 @@ static double g_prevBid = 0.0;
 
 //============================= UTILITY FUNCTIONS ==================//
 void Log(int level, string msg) {
-   if(level <= DebugLevel) Print("[L", level, "] ", msg);
+   if(level <= DebugLevel) Print("[Log", level, "] ", msg);
 }
 
 bool IsEven(int n) { return (n % 2 == 0); }
@@ -151,10 +155,17 @@ void UpdatePositionStats() {
       }
    }
    
-   g_netLots = g_buyLots - g_sellLots;
+         g_netLots = g_buyLots - g_sellLots;
+
+         // Profit views: overall P/L since start, cycle profit (booked+open), open vs booked breakdown
+         double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+         double overallProfit = equity - g_startingEquity;         // overall profit since EA started
+         double cycleProfit = equity - g_lastCloseEquity;         // current cycle profit (booked + open since last close-all)
+         double openProfit = g_totalProfit;                       // current open P/L
+         double bookedCycle = cycleProfit - openProfit;           // booked in this cycle
    
-   Log(3, StringFormat("Stats: B%d/%.2f S%d/%.2f Net:%.2f P:%.2f", 
-       g_buyCount, g_buyLots, g_sellCount, g_sellLots, g_netLots, g_totalProfit));
+         Log(3, StringFormat("Stats B%d/%.2f S%d/%.2f N%.2f ML%.2f MP=%.2f P%.2f(%.2f+ %.2f= %.2f ) EQ=%.2f", 
+            g_buyCount, g_buyLots, g_sellCount, g_sellLots, g_netLots, -g_maxLossCycle, g_maxProfitCycle, overallProfit, openProfit, bookedCycle, cycleProfit, equity));
 }
 
 //============================= RISK CHECK =========================//
@@ -346,20 +357,27 @@ void TrailTotalProfit() {
    
    // Calculate trail start level
    double lossStart = g_maxLossCycle * TrailStartPct;
-   double profitStart = g_maxProfitCycle * 1.0; // 100%
+   double profitStart = g_maxProfitCycle * TrailProfitPct;  // Use adjustable profit percentage
    g_trailStart = MathMax(lossStart, profitStart);
    
    if(g_trailStart > 0) {
       g_trailGap = MathMin(g_trailStart * TrailGapPct, MaxTrailGap);
    }
    
-   // Start trailing
+   // Debug: show trail decision values
+   Log(3, StringFormat("Trail DEBUG: cycleProfit=%.2f | MaxLoss=%.2f(start=%.2f) MaxProfit=%.2f(start=%.2f) | trailStart=%.2f | active=%d", 
+       cycleProfit, -g_maxLossCycle, -lossStart, g_maxProfitCycle, profitStart, g_trailStart, g_trailActive ? 1 : 0));
+   
+   // Start trailing: should activate when cycle profit > (max profit already reached - some buffer)
+   // Or when cycle profit exceeds max loss recovery + buffer
    if(!g_trailActive && cycleProfit > g_trailStart && g_trailStart > 0) {
       g_trailActive = true;
       g_trailPeak = cycleProfit;
       g_trailFloor = g_trailPeak - g_trailGap;
-      Log(1, StringFormat("Trail START: profit=%.2f start=%.2f gap=%.2f floor=%.2f", 
-          cycleProfit, g_trailStart, g_trailGap, g_trailFloor));
+      double lossStart = g_maxLossCycle * TrailStartPct;
+      double profitStart = g_maxProfitCycle * 1.0;
+      Log(1, StringFormat("Trail START: profit=%.2f start=%.2f gap=%.2f floor=%.2f | MaxLoss=%.2f LossStart=%.2f MaxProfit=%.2f ProfitStart=%.2f", 
+          cycleProfit, g_trailStart, g_trailGap, g_trailFloor, g_maxLossCycle, lossStart, g_maxProfitCycle, profitStart));
    }
    
    // Update trail
@@ -413,9 +431,11 @@ void AddTrail(ulong ticket, double peakPPL, double threshold) {
    ArrayResize(g_trails, size + 1);
    g_trails[size].ticket = ticket;
    g_trails[size].peakPPL = peakPPL;
+   g_trails[size].activePeak = 0.0;   // Will be set when trail activates
    g_trails[size].threshold = threshold;
    g_trails[size].gap = threshold / 2.0;
    g_trails[size].active = false;
+   g_trails[size].lastLogTick = 0;
 }
 
 void RemoveTrail(int index) {
@@ -432,6 +452,8 @@ void TrailSinglePositions() {
    if(!EnableSingleTrailing) return;
    if(g_trailActive) return; // Skip when total trailing active
    
+   int currentTick = (int)GetTickCount();  // For throttling logs
+   
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
       if(!PositionSelectByTicket(ticket)) continue;
@@ -446,38 +468,69 @@ void TrailSinglePositions() {
       double profitPer01 = (profit / lots) * 0.01;
       int idx = FindTrailIndex(ticket);
       
-      // Start tracking
+      // Start tracking only when profit reaches threshold
       if(profitPer01 >= SingleProfitThreshold && idx < 0) {
          AddTrail(ticket, profitPer01, SingleProfitThreshold);
          idx = FindTrailIndex(ticket);
-         Log(2, StringFormat("Trail START #%I64u PPL=%.2f", ticket, profitPer01));
+         double gapValue = SingleProfitThreshold / 2.0;
+         Log(2, StringFormat("Trail START #%I64u PPL=%.2f | Threshold=%.2f Gap=%.2f ActivateAt=%.2f", 
+             ticket, profitPer01, SingleProfitThreshold, gapValue, SingleProfitThreshold / 2.0));
       }
       
       // Update tracking
       if(idx >= 0) {
          double peak = g_trails[idx].peakPPL;
+         double activePeak = g_trails[idx].activePeak;
          double gap = g_trails[idx].gap;
          bool active = g_trails[idx].active;
          
-         // Update peak
-         if(profitPer01 > peak) {
+         // Update peak if profit still positive and higher (before activation)
+         if(!active && profitPer01 > 0 && profitPer01 > peak) {
             g_trails[idx].peakPPL = profitPer01;
             peak = profitPer01;
+            Log(2, StringFormat("Trail PEAK TRACK #%I64u peak=%.2f | AwaitingActivation", ticket, peak));
          }
          
-         // Activate when drops to half threshold
-         if(!active && profitPer01 <= SingleProfitThreshold / 2.0) {
+         // Activate when drops to half threshold OR when peak reaches 2x threshold
+         // This ensures high-profit positions also trail
+         double activationThreshold = SingleProfitThreshold / 2.0;
+         bool shouldActivate = (profitPer01 <= activationThreshold && profitPer01 > 0) || (peak >= SingleProfitThreshold * 2.0);
+         
+         if(!active && shouldActivate) {
             g_trails[idx].active = true;
+            g_trails[idx].activePeak = peak;  // Set peak at activation point (use tracked peak, not current)
             active = true;
-            Log(2, StringFormat("Trail ACTIVE #%I64u peak=%.2f", ticket, peak));
+            activePeak = peak;
+            Log(1, StringFormat("Trail ACTIVE #%I64u peak=%.2f | Current=%.2f | Ready to Trail", 
+                ticket, activePeak, profitPer01));
          }
          
-         // Close if drops by gap from peak
+         // Update active peak (trail upward after activation)
+         if(active && profitPer01 > activePeak) {
+            g_trails[idx].activePeak = profitPer01;
+            activePeak = profitPer01;
+            Log(2, StringFormat("Trail PEAK UPDATE #%I64u peak=%.2f", ticket, activePeak));
+         }
+         
+         // Show continuous trail status when active (throttle to avoid spam - every 500ms)
          if(active) {
-            double drop = peak - profitPer01;
-            if(drop >= gap) {
-               Log(1, StringFormat("Trail CLOSE #%I64u peak=%.2f cur=%.2f drop=%.2f", 
-                   ticket, peak, profitPer01, drop));
+            double trailFloorValue = activePeak - gap;
+            if(currentTick - g_trails[idx].lastLogTick >= 500) {  // Log every 500ms
+               Log(3, StringFormat("Trail STATUS #%I64u | Peak=%.2f Current=%.2f Floor=%.2f Drop=%.2f", 
+                   ticket, activePeak, profitPer01, trailFloorValue, activePeak - profitPer01));
+               g_trails[idx].lastLogTick = currentTick;
+            }
+            
+            // Close if current PPL drops below or equal to trail floor
+            if(profitPer01 <= trailFloorValue) {
+               // Get position details before closing
+               string posType = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+               double posLots = PositionGetDouble(POSITION_VOLUME);
+               double posProfit = PositionGetDouble(POSITION_PROFIT);
+               double drop = activePeak - profitPer01;
+               
+               Log(1, StringFormat("Trail CLOSE #%I64u %s %.2f lots | Profit=%.2f | Trail Stats: Peak=%.2f Current=%.2f Drop=%.2f TrailMin=%.2f", 
+                   ticket, posType, posLots, posProfit, activePeak, profitPer01, drop, trailFloorValue));
                
                if(trade.PositionClose(ticket)) {
                   RemoveTrail(idx);
@@ -487,9 +540,10 @@ void TrailSinglePositions() {
       }
    }
    
-   // Cleanup stale trails
+   // Cleanup stale trails (positions that no longer exist)
    for(int j = ArraySize(g_trails) - 1; j >= 0; j--) {
       if(!PositionSelectByTicket(g_trails[j].ticket)) {
+         Log(2, StringFormat("Trail CLEANUP #%I64u (position closed)", g_trails[j].ticket));
          RemoveTrail(j);
       }
    }
@@ -500,7 +554,8 @@ int OnInit() {
    Log(1, StringFormat("EA Init: Magic=%d Gap=%.1f Lot=%.2f", Magic, GapInPoints, BaseLotSize));
    
    // Initialize equity tracking
-   g_lastCloseEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+   g_startingEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+   g_lastCloseEquity = g_startingEquity;
    
    return INIT_SUCCEEDED;
 }
