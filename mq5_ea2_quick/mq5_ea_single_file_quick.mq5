@@ -65,6 +65,9 @@ double g_lastCloseEquity = 0.0;
 double g_startingEquity = 0.0;      // EA start equity for overall P/L tracking
 double g_maxLossCycle = 0.0;
 double g_maxProfitCycle = 0.0;
+double g_overallMaxProfit = 0.0;    // Maximum profit ever reached (from start)
+double g_overallMaxLoss = 0.0;      // Maximum loss ever reached (from start)
+double g_maxLotsCycle = 0.0;        // Maximum lot size used in current cycle
 
 // Single Trailing State
 struct SingleTrail {
@@ -156,16 +159,26 @@ void UpdatePositionStats() {
    }
    
          g_netLots = g_buyLots - g_sellLots;
+         
+         // Track max lots in cycle
+         double totalLots = g_buyLots + g_sellLots;
+         if(totalLots > g_maxLotsCycle) g_maxLotsCycle = totalLots;
 
          // Profit views: overall P/L since start, cycle profit (booked+open), open vs booked breakdown
          double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+         if(equity == 0) return;  // Account data not ready yet
+         
          double overallProfit = equity - g_startingEquity;         // overall profit since EA started
          double cycleProfit = equity - g_lastCloseEquity;         // current cycle profit (booked + open since last close-all)
          double openProfit = g_totalProfit;                       // current open P/L
          double bookedCycle = cycleProfit - openProfit;           // booked in this cycle
+         
+         // Track overall max profit/loss
+         if(overallProfit > g_overallMaxProfit) g_overallMaxProfit = overallProfit;
+         if(overallProfit < 0 && MathAbs(overallProfit) > g_overallMaxLoss) g_overallMaxLoss = MathAbs(overallProfit);
    
-         Log(3, StringFormat("Stats B%d/%.2f S%d/%.2f N%.2f ML%.2f MP=%.2f P%.2f(%.2f+ %.2f= %.2f ) EQ=%.2f", 
-            g_buyCount, g_buyLots, g_sellCount, g_sellLots, g_netLots, -g_maxLossCycle, g_maxProfitCycle, overallProfit, openProfit, bookedCycle, cycleProfit, equity));
+         Log(3, StringFormat("Stats B%d/%.2f S%d/%.2f N%.2f ML%.0f/%.0f MP=%.0f/%.0f P%.0f(%.0f+%.0f=%.2f)EQ=%.0f", 
+            g_buyCount, g_buyLots, g_sellCount, g_sellLots, g_netLots, -g_maxLossCycle, -g_overallMaxLoss,g_maxProfitCycle, g_overallMaxProfit, overallProfit, openProfit, bookedCycle, cycleProfit, equity));
 }
 
 //============================= RISK CHECK =========================//
@@ -271,7 +284,7 @@ void PlaceGridOrders() {
    
    // Block new orders during total trailing
    if(g_trailActive) {
-      Log(3, "Trading blocked: total trailing active");
+      Log(3, "New orders blocked: total trailing active (closing positions)");
       return;
    }
    
@@ -390,7 +403,12 @@ void TrailTotalProfit() {
       
       // Check for close trigger
       if(cycleProfit <= g_trailFloor) {
-         Log(1, StringFormat("Trail CLOSE ALL: profit=%.2f <= floor=%.2f", cycleProfit, g_trailFloor));
+         Log(1, StringFormat("Trail CLOSE ALL: profit=%.2f <= floor=%.2f | Peak=%.2f Gap=%.2f | BUY:%d SELL:%d", 
+             cycleProfit, g_trailFloor, g_trailPeak, g_trailGap, g_buyCount, g_sellCount));
+         
+         // Calculate cycle stats before closing (for vline info)
+         double openProfit = g_totalProfit;
+         double bookedCycle = cycleProfit - openProfit;
          
          // Close all positions
          for(int i = PositionsTotal() - 1; i >= 0; i--) {
@@ -401,16 +419,48 @@ void TrailTotalProfit() {
             
             trade.PositionClose(ticket);
          }
+         // Draw vertical line with trail & profit info at close
+         datetime nowTime = TimeCurrent();
+         string vlineName = StringFormat("TrailClose_P%.02f_E%.0f", cycleProfit, AccountInfoDouble(ACCOUNT_EQUITY));
          
-         // Reset cycle
+         // Delete old object if it exists
+         ObjectDelete(0, vlineName);
+         
+         // Create vertical line with price parameter
+         double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         if(ObjectCreate(0, vlineName, OBJ_VLINE, 0, nowTime, currentPrice)) {
+            // Set color based on profit: green if positive, red if negative
+            color lineColor = (cycleProfit >= 0) ? clrGreen : clrRed;
+            ObjectSetInteger(0, vlineName, OBJPROP_COLOR, lineColor);
+            
+            // Set line width proportional to profit: base 1, +1 for every 500 profit, max 10
+            int lineWidth = 1 + (int)(MathAbs(cycleProfit) / 5.0);
+            lineWidth = MathMin(lineWidth, 10);
+            lineWidth = MathMax(lineWidth, 1);
+            ObjectSetInteger(0, vlineName, OBJPROP_WIDTH, lineWidth);
+            
+            ObjectSetInteger(0, vlineName, OBJPROP_STYLE, STYLE_SOLID);
+            ObjectSetString(0, vlineName, OBJPROP_TEXT, 
+               StringFormat(" P:%.0f|ML:%.0f|Book:%.0f|MaxLot:%.2f|Peak:%.0f|Drop:%.0f|%dpos", 
+                  cycleProfit, -g_maxLossCycle, bookedCycle, g_maxLotsCycle, g_trailPeak, g_trailPeak - cycleProfit, g_buyCount + g_sellCount));
+            ChartRedraw(0);
+            Log(1, StringFormat("VLine created: %s (color: %s, width: %d) | ML:%.0f Book:%.0f Lot:%.2f", vlineName, (cycleProfit >= 0) ? "GREEN" : "RED", lineWidth, -g_maxLossCycle, bookedCycle, g_maxLotsCycle));
+         }
+
+
+         // Reset cycle parameters
          g_lastCloseEquity = AccountInfoDouble(ACCOUNT_EQUITY);
          g_maxLossCycle = 0.0;
          g_maxProfitCycle = 0.0;
+         g_maxLotsCycle = 0.0;
          g_trailActive = false;
          g_trailStart = 0.0;
          g_trailGap = 0.0;
          g_trailPeak = 0.0;
          g_trailFloor = 0.0;
+         // If you add more cycle stats, reset them here as well
+         
+         
          
          Log(1, StringFormat("Cycle RESET: new equity=%.2f", g_lastCloseEquity));
       }
@@ -586,8 +636,52 @@ void OnTick() {
    
    // Trail individual positions
    TrailSinglePositions();
+   
+   // Update current profit vline (follows current time with stats)
+   UpdateCurrentProfitVline();
 }
 
+//============================= CURRENT PROFIT VLINE ==============//
+void UpdateCurrentProfitVline() {
+   // Only show if we have open positions
+   if((g_buyCount + g_sellCount) == 0) {
+      ObjectDelete(0, "CurrentProfitVLine");
+      return;
+   }
+   
+   // Get current stats
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(equity == 0) return;
+   
+   double cycleProfit = equity - g_lastCloseEquity;
+   double openProfit = g_totalProfit;
+   double bookedCycle = cycleProfit - openProfit;
+   
+   // Update vline at current time (slightly ahead)
+   datetime nowTime = TimeCurrent();
+   string vlineName = "CurrentProfitVLine";
+   
+   // Delete old and create new
+   ObjectDelete(0, vlineName);
+   
+   double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   if(ObjectCreate(0, vlineName, OBJ_VLINE, 0, nowTime+120, currentPrice)) {
+      // Color based on profit
+      color lineColor = (cycleProfit >= 0) ? clrGreen : clrRed;
+      ObjectSetInteger(0, vlineName, OBJPROP_COLOR, lineColor);
+      
+      // Width proportional to profit
+      int lineWidth = 1 + (int)(MathAbs(cycleProfit) / 5.0);
+      lineWidth = MathMin(lineWidth, 10);
+      lineWidth = MathMax(lineWidth, 1);
+      ObjectSetInteger(0, vlineName, OBJPROP_WIDTH, lineWidth);
+      
+      ObjectSetInteger(0, vlineName, OBJPROP_STYLE, STYLE_DOT);
+      ObjectSetString(0, vlineName, OBJPROP_TEXT, 
+         StringFormat("LIVE|P:%.0f|ML:%.0f|Book:%.0f|MaxLot:%.2f|B%d/S%d", 
+            cycleProfit, -g_maxLossCycle, bookedCycle, g_maxLotsCycle, g_buyCount, g_sellCount));
+   }
+}
 void OnDeinit(const int reason) {
    string reasonText = "Unknown";
    switch(reason) {
