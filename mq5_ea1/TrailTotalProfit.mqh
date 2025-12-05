@@ -29,6 +29,9 @@ input double BaseTrailGapPct        = 0.50;   // Base trail gap % for low profit
 input double MinTrailGapPct         = 0.20;   // Minimum trail gap % for high profits (20%)
 input double GapTransitionProfit    = 1000.0; // Profit level where gap transitions from base to min %
 
+// Minimum order count to activate trailing
+input int MinOrderCountToActivateTrail = 3; // Trail profit only activates when open orders >= this count
+
 //============================ Globals =============================//
 // NOTE: We read current total profit from a global set by Utils.mqh.
 // Ensure Utils.mqh maintains this variable each tick (e.g., in fnc_GetInfoFromOrdersTraversal()).
@@ -155,6 +158,16 @@ void fnc_TrailTotalProfit()
          curTotalProfit, g_total_starttrail, maxLoss, maxProfit, (g_total_touched_loss_this_cycle ? "YES" : "NO")));
       
       bool shouldStartTrail = false;
+      
+      // Check if we have minimum required order count
+      int totalOpenOrders = g_openTotalCount;
+      if(totalOpenOrders < MinOrderCountToActivateTrail)
+      {
+         fnc_Print(DebugLevel, 3, StringFormat(
+            "[TrailTotalProfit] NOT STARTING: open orders (%d) < required (%d)", 
+            totalOpenOrders, MinOrderCountToActivateTrail));
+         return;
+      }
       
       if(curTotalProfit > g_total_starttrail && g_total_starttrail > 0.0)
       {

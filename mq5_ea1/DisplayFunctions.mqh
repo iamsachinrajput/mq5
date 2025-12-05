@@ -65,12 +65,13 @@ void fnc_UpdateChartLabel(bool enableDisplay, bool enablePerf)
    double cycleTotalProfit = currentEquity - g_last_closeall_equity;    // total cycle profit (closed + open)
    double cycleOpenProfit = g_current_open_profit;                      // current open positions profit
    double cycleClosedProfit = cycleTotalProfit - cycleOpenProfit;       // closed orders profit = total - open
+   string daywiseProfits = fnc_GetLast10DaysProfit();
    
    color profitColor = (cycleTotalProfit >= 0) ? clrLime : clrRed;
 
    // Compact multiline panel (fewer labels -> fewer object ops)
    string panel = StringFormat(
-      "Status:%s | Profit T:%.0f (%.0f + %.0f =%.0f )\nMax Loss: %.0f/%.0f Profit: %.0f/%.0f\nTrail: Start:%.0f Gap:%.0f Peak:%.0f Floor:%.0f | wish:%.0f\nNextLots B:%.2f S:%.2f \nSpread: %.5f/%.5f\nOrders: B%d/%.2f S%d/%.2f Tot:%d NetLots:%.2f\n%s\nPerf: Last %.2f ms | Avg %.2f ms",
+      "Status:%s | Profit T:%.0f (%.0f + %.0f =%.0f )\nMax Loss: %.0f/%.0f Profit: %.0f/%.0f\nTrail: Start:%.0f Gap:%.0f Peak:%.0f Floor:%.0f | wish:%.0f\nNextLots B:%.2f S:%.2f \nSpread: %.5f/%.5f\nOrders: B%d/%.2f S%d/%.2f Tot:%d NetLots:%.2f\n%s\nDay P&L: %s\nPerf: Last %.2f ms | Avg %.2f ms",
       (g_TradingAllowed ? "ACTIVE" : "STOPPED"),
       totalProfitFromStart,
       cycleClosedProfit, cycleOpenProfit, cycleTotalProfit,
@@ -80,6 +81,7 @@ void fnc_UpdateChartLabel(bool enableDisplay, bool enablePerf)
       g_openBuyCount, g_TotalBuyLots, g_openSellCount, g_TotalSellLots,
       g_openTotalCount, g_TotalNetLots,
       fnc_GetLast10CloseallProfits(),
+      daywiseProfits,
       g_LastTickTime, g_AvgTickTime
    );
 
@@ -133,6 +135,7 @@ void fnc_PrintDeinitSummary(int reason)
    double cycleOpenProfit = g_current_open_profit;
    double cycleClosedProfit = cycleTotalProfit - cycleOpenProfit;
    double totalProfitFromStart = g_opening_balance > 0 ? (currentEquity - g_opening_balance) : 0.0;
+   string daywiseProfits = fnc_GetLast10DaysProfit();
    
    Print("");
    Print("═════════════════════════════════════════════════════════════════════════════════");
@@ -140,73 +143,27 @@ void fnc_PrintDeinitSummary(int reason)
    Print("═════════════════════════════════════════════════════════════════════════════════");
    Print("");
    
-   Print("━━ TERMINATION INFO ━━");
-   Print("  Reason: " + reasonText);
-   Print("  Symbol: " + _Symbol);
-   Print("");
-   
-   Print("━━ PROFIT TRACKING ━━");
-   Print("  Starting Equity: ", g_opening_balance);
-   Print("  Current Equity: ", currentEquity);
-   Print("  Total P&L from Start: ", totalProfitFromStart);
-   Print("");
-   Print("  Current Cycle Closed P&L: ", cycleClosedProfit);
-   Print("  Current Cycle Open P&L: ", cycleOpenProfit);
-   Print("  Current Cycle Total: ", cycleTotalProfit);
-   Print("");
-   
-   Print("━━ MAXIMUM TOUCH POINTS (Overall) ━━");
-   Print("  Max Loss Touched: ", g_max_loss_overall, " (drawdown threshold)");
-   Print("  Max Profit Touched: ", g_max_profit_overall);
-   Print("");
-   
-   Print("━━ CURRENT CYCLE EXTREMES ━━");
-   Print("  Max Loss in Cycle: ", g_max_loss_current_cycle);
-   Print("  Max Profit in Cycle: ", g_max_profit_current_cycle);
-   Print("");
-   
-   Print("━━ TRAILING STATISTICS ━━");
-   Print("  Trail Start Profit: ", g_total_starttrail);
-   Print("  Trail Gap Used: ", g_total_trailgap);
-   Print("  Peak Profit Reached: ", g_total_peakprofit);
-   Print("  Floor Level (Close Trigger): ", g_total_floorprofit);
-   Print("");
-   
-   Print("━━ CLOSE-ALL HISTORY ━━");
-   Print("  Total Close-All Events: ", g_closeall_count);
-   if(g_closeall_count > 0)
-   {
-      double sum = 0.0;
-      for(int i = 0; i < MAX_CLOSEALL_HISTORY; i++)
-         sum += g_closeall_profits[i];
-      double avgProfit = sum / (double)(g_closeall_count > MAX_CLOSEALL_HISTORY ? MAX_CLOSEALL_HISTORY : g_closeall_count);
-      Print("  Average Profit per Close-All: ", avgProfit);
-   }
-   Print("");
-   
-   Print("━━ ORDER & POSITION STATISTICS ━━");
-   Print("  Total Open Positions: ", g_openTotalCount, " (Buy: ", g_openBuyCount, " | Sell: ", g_openSellCount, ")");
-   Print("  Total Open Lots: ", (g_TotalBuyLots + g_TotalSellLots), " (Net: ", g_TotalNetLots, ")");
-   Print("  Deepest Buy Level: ", g_deepest_buy_price);
-   Print("  Deepest Sell Level: ", g_deepest_sell_price);
-   Print("");
-   
-   Print("━━ SPREAD ANALYSIS ━━");
-   Print("  Current Spread: ", g_current_spread_px);
-   Print("  Max Spread Seen: ", g_max_spread_px);
-   Print("");
-   
-   Print("━━ PERFORMANCE ━━");
-   Print("  Total Ticks Processed: ", g_TickCount);
-   Print("  Last Tick Time: ", g_LastTickTime, " ms");
-   Print("  Average Tick Time: ", g_AvgTickTime, " ms");
-   Print("");
-   
-   Print("━━ TRAIL BY PROFIT STATISTICS ━━");
-   Print("  Total Orders Closed by Single Profit Trail: ", g_short_close_bytrail_total_orders);
-   Print("  Total Profit from Single Profit Trail: ", g_short_close_bytrail_total_profit);
-   Print("  Total Lots Closed by Single Profit Trail: ", g_short_close_bytrail_total_lots);
-   Print("");
+      Print("━━ TERMINATION INFO ━━");
+      Print("  Reason: " + reasonText);
+      Print("  Symbol: " + _Symbol);
+      Print("");
+
+      Print("━━ KEY METRICS ━━");
+      Print("  Total P&L from Start: ", totalProfitFromStart);
+      Print("  Max Loss Touched (overall): ", g_max_loss_overall);
+      Print("  Max Profit Touched (overall): ", g_max_profit_overall);
+      Print("  Max Profit Touched (any cycle): ", g_max_profit_any_cycle);
+      Print("  Daywise Profit Last 10 Days (D0=today): ", daywiseProfits);
+      Print("");
+      Print("  Max Single Lot Used: ", g_max_single_lot_used);
+      Print("  Max Total Lots in a Cycle: ", g_max_total_lots_any_cycle);
+      Print("  Max Orders Opened in a Cycle: ", g_max_orders_any_cycle);
+      Print("");
+
+      Print("━━ CURRENT SNAPSHOT ━━");
+      Print("  Current Equity: ", currentEquity);
+      Print("  Current Cycle Total P&L: ", cycleTotalProfit, " (Closed: ", cycleClosedProfit, " | Open: ", cycleOpenProfit, ")");
+      Print("");
    
    Print("═════════════════════════════════════════════════════════════════════════════════");
    Print("                          END OF DEINIT SUMMARY");
