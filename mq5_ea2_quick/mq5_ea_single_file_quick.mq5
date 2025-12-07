@@ -8,7 +8,7 @@
 //============================= INPUTS =============================//
 // Core Trading Parameters
 input int    Magic = 12345;               // Magic number
-input double GapInPoints = 1000.0;         // Gap between levels in points
+input double GapInPoints = 3000.0;         // Gap between levels in points
 input double BaseLotSize = 0.01;          // Starting lot size
 input int    DebugLevel = 0;              // Debug level (0=off, 1=critical, 2=info, 3=verbose)
 
@@ -21,27 +21,30 @@ enum ENUM_LOT_METHOD {
 input ENUM_LOT_METHOD LotChangeMethod = LOT_METHOD_MAXORDERS_SWITCH; // Lot calculation method
 
 // Risk Management (simplified)
-input int    MaxPositions = 100000;         // Maximum open positions
-input double MaxTotalLots = 500000.0;        // Maximum total lot exposure
-input double MaxLossLimit = 500000.0;       // Maximum loss limit
-input double DailyProfitTarget = 5000000.0;  // Daily profit target to stop trading
+input int    MaxPositions = 9999999;         // Maximum open positions
+input double MaxTotalLots = 9999999;        // Maximum total lot exposure
+input double MaxLossLimit = 9999999;       // Maximum loss limit
+input double DailyProfitTarget = 9999999;  // Daily profit target to stop trading
 
 // total Profit Trailing
-input bool   EnableTotalTrailing = true;  // Enable total profit trailing
-input double TrailStartPct = 0.10;        // Start trail at % of max loss (0.10 = 10%)
-input double TrailProfitPct = 0.85;       // Start trail at % of max profit (0.85 = 85%)
-input double TrailGapPct = 0.50;          // Trail gap as % of start value (0.50 = 50%)
-input double MaxTrailGap = 2500.0;         // Maximum trail gap (absolute cap)
+ bool   EnableTotalTrailing = false;  // Enable total profit trailing
+ double TrailStartPct = 0.10;        // Start trail at % of max loss (0.10 = 10%)
+ double TrailProfitPct = 0.85;       // Start trail at % of max profit (0.85 = 85%)
+ double TrailGapPct = 0.50;          // Trail gap as % of start value (0.50 = 50%)
+ double MaxTrailGap = 2500.0;         // Maximum trail gap (absolute cap)
 
-input bool   EnableSingleTrailing = true; // Enable single position trailing
-input double SingleProfitThreshold = 0.01; // Profit per 0.01 lot to start trail (negative = auto-calc from gap)
+ bool   EnableSingleTrailing = true; // Enable single position trailing
+ double SingleProfitThreshold = -1; // Profit per 0.01 lot to start trail (negative = auto-calc from gap)
 
 // Adaptive Gap
-input bool   UseAdaptiveGap = true;       // Use ATR-based adaptive gap
-input int    ATRPeriod = 14;              // ATR period for adaptive gap
-input double ATRMultiplier = 1.5;         // ATR multiplier
-input double MinGapPoints = 500.0;         // Minimum gap points
-input double MaxGapPoints =10000.0;        // Maximum gap points
+ bool   UseAdaptiveGap = true;       // Use ATR-based adaptive gap
+ int    ATRPeriod = 14;              // ATR period for adaptive gap
+ double ATRMultiplier = 1.5;         // ATR multiplier
+ double MinGapPoints = 500.0;         // Minimum gap points
+double MaxGapPoints = 10000.0;        // Maximum gap points
+
+// Display Settings
+input bool   ShowLabels = true;         // Show chart labels (disable for performance)
 
 //============================= GLOBALS ============================//
 CTrade trade;
@@ -77,6 +80,14 @@ double g_overallMaxProfit = 0.0;    // Maximum profit ever reached (from start)
 double g_overallMaxLoss = 0.0;      // Maximum loss ever reached (from start)
 double g_maxLotsCycle = 0.0;        // Maximum single lot size in current cycle
 double g_overallMaxLotSize = 0.0;   // Maximum single lot size ever used (never resets)
+double g_maxSpread = 0.0;           // Maximum spread ever touched
+
+// History tracking
+double g_last5Closes[5];            // Last 5 close-all profits
+int    g_closeCount = 0;            // Total number of close-alls
+double g_dailyProfits[5];           // Last 5 days overall profits
+int    g_lastDay = -1;              // Last recorded day
+int    g_dayIndex = 0;              // Current day index in array
 
 // Single Trailing State
 struct SingleTrail {
@@ -234,7 +245,13 @@ void UpdatePositionStats() {
    if(cycleProfit < 0) {
       double absLoss = MathAbs(cycleProfit);
       if(absLoss > g_maxLossCycle) g_maxLossCycle = absLoss;
-   }   Log(3, StringFormat("Stats B%d/%.2f S%d/%.2f N%.2f ML%.0f/%.0f MP=%.0f/%.0f MaxLot%.2f/%.2f P%.0f(%.0f+%.0f=%.2f)EQ=%.0f", 
+   }
+   
+   // Track max spread
+   double currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * _Point;
+   if(currentSpread > g_maxSpread) g_maxSpread = currentSpread;
+   
+   Log(3, StringFormat("Stats B%d/%.2f S%d/%.2f N%.2f ML%.2f/%.2f MP=%.2f/%.2f MaxLot%.2f/%.2f P%.2f(%.2f+%.2f=%.2f)EQ=%.2f", 
       g_buyCount, g_buyLots, g_sellCount, g_sellLots, g_netLots, -g_maxLossCycle, -g_overallMaxLoss, g_maxProfitCycle, g_overallMaxProfit, g_maxLotsCycle, g_overallMaxLotSize, overallProfit, openProfit, bookedCycle, cycleProfit, equity));
 }
 
@@ -646,14 +663,22 @@ void TrailTotalProfit() {
             ObjectSetInteger(0, vlineName, OBJPROP_WIDTH, lineWidth);
             
             ObjectSetInteger(0, vlineName, OBJPROP_STYLE, STYLE_SOLID);
-            ObjectSetString(0, vlineName, OBJPROP_TEXT, 
-               StringFormat(" P:%.0f|ML:%.0f|Book:%.0f|MaxLot:%.2f|Peak:%.0f|Drop:%.0f|%dpos", 
-                  cycleProfit, -g_maxLossCycle, bookedCycle, g_maxLotsCycle, g_trailPeak, g_trailPeak - cycleProfit, g_buyCount + g_sellCount));
+            string vlinetext = StringFormat("P:%.2f/%.2f/%.2f(L%.2f)ML%.2f L%.2f/%.2f", 
+                  cycleProfit,g_trailPeak - cycleProfit,g_trailPeak,bookedCycle, -g_maxLossCycle, g_maxLotsCycle, g_overallMaxLotSize);
+            ObjectSetString(0, vlineName, OBJPROP_TEXT, vlinetext);
             ChartRedraw(0);
-            Log(1, StringFormat("VLine created: %s (color: %s, width: %d) | ML:%.0f Book:%.0f Lot:%.2f", vlineName, (cycleProfit >= 0) ? "GREEN" : "RED", lineWidth, -g_maxLossCycle, bookedCycle, g_maxLotsCycle));
+            Log(1, StringFormat("VLine created: %s (color: %s, width: %d) | ML:%.2f Book:%.2f Lot:%.2f", vlineName, (cycleProfit >= 0) ? "GREEN" : "RED", lineWidth, -g_maxLossCycle, bookedCycle, g_maxLotsCycle));
+            Log(1, StringFormat("VLine Text: %s", vlinetext));
          }
 
 
+         // Record close profit in history (shift array and add new)
+         for(int i = 4; i > 0; i--) {
+            g_last5Closes[i] = g_last5Closes[i-1];
+         }
+         g_last5Closes[0] = cycleProfit;
+         g_closeCount++;
+         
          // Reset cycle parameters
          g_lastCloseEquity = AccountInfoDouble(ACCOUNT_EQUITY);
          g_maxLossCycle = 0.0;
@@ -816,6 +841,13 @@ int OnInit() {
    g_startingEquity = AccountInfoDouble(ACCOUNT_EQUITY);
    g_lastCloseEquity = g_startingEquity;
    
+   // Initialize history arrays
+   ArrayInitialize(g_last5Closes, 0.0);
+   ArrayInitialize(g_dailyProfits, 0.0);
+   g_closeCount = 0;
+   g_lastDay = -1;
+   g_dayIndex = 0;
+   
    return INIT_SUCCEEDED;
 }
 
@@ -846,8 +878,23 @@ void OnTick() {
    // Trail individual positions
    TrailSinglePositions();
    
+   // Track daily profit (once per day)
+   MqlDateTime dt;
+   TimeCurrent(dt);
+   if(g_lastDay != dt.day) {
+      double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+      double overallProfit = equity - g_startingEquity;
+      
+      // Shift array and add new daily profit
+      for(int i = 4; i > 0; i--) {
+         g_dailyProfits[i] = g_dailyProfits[i-1];
+      }
+      g_dailyProfits[0] = overallProfit;
+      g_lastDay = dt.day;
+   }
+   
    // Update current profit vline (follows current time with stats)
-   UpdateCurrentProfitVline();
+   if(ShowLabels) UpdateCurrentProfitVline();
 }
 
 //============================= CURRENT PROFIT VLINE ==============//
@@ -855,6 +902,10 @@ void UpdateCurrentProfitVline() {
    // Only show if we have open positions
    if((g_buyCount + g_sellCount) == 0) {
       ObjectDelete(0, "CurrentProfitVLine");
+      ObjectDelete(0, "CurrentProfitLabel");
+      ObjectDelete(0, "SpreadEquityLabel");
+      ObjectDelete(0, "Last5ClosesLabel");
+      ObjectDelete(0, "Last5DaysLabel");
       return;
    }
    
@@ -886,9 +937,119 @@ void UpdateCurrentProfitVline() {
       ObjectSetInteger(0, vlineName, OBJPROP_WIDTH, lineWidth);
       
       ObjectSetInteger(0, vlineName, OBJPROP_STYLE, STYLE_DOT);
-      ObjectSetString(0, vlineName, OBJPROP_TEXT, 
-         StringFormat("LIVE|P:%.0f|ML:%.0f|Book:%.0f|MaxLot:%.2f|B%d/S%d", 
-            cycleProfit, -g_maxLossCycle, bookedCycle, g_maxLotsCycle, g_buyCount, g_sellCount));
+      ObjectSetInteger(0, vlineName, OBJPROP_STYLE, STYLE_SOLID);
+      string vlinetext = StringFormat("P:%.2f/%.2f/%.2f(L%.2f)ML%.2f %dB%.2f %dS%.2f L%.2f/%.2f", 
+            cycleProfit,g_trailPeak - cycleProfit,g_trailPeak,bookedCycle, -g_maxLossCycle, 
+            g_buyCount,g_buyLots,g_sellCount,g_sellLots,g_maxLotsCycle,g_overallMaxLotSize);
+      ObjectSetString(0, vlineName, OBJPROP_TEXT, vlinetext);
+      
+      // Create/Update chart label with same content and color
+      string labelName = "CurrentProfitLabel";
+      ObjectDelete(0, labelName);
+      
+      if(ObjectCreate(0, labelName, OBJ_LABEL, 0, 0, 0)) {
+         ObjectSetInteger(0, labelName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+         ObjectSetInteger(0, labelName, OBJPROP_XDISTANCE, 10);
+         ObjectSetInteger(0, labelName, OBJPROP_YDISTANCE, 30);
+         ObjectSetInteger(0, labelName, OBJPROP_COLOR, lineColor);
+         ObjectSetInteger(0, labelName, OBJPROP_FONTSIZE, 12);
+         ObjectSetString(0, labelName, OBJPROP_FONT, "Arial Bold");
+         ObjectSetString(0, labelName, OBJPROP_TEXT, vlinetext);
+         ObjectSetInteger(0, labelName, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, labelName, OBJPROP_HIDDEN, false);
+         ObjectSetInteger(0, labelName, OBJPROP_BACK, false);
+         ObjectSetInteger(0, labelName, OBJPROP_ZORDER, 0);
+         ChartRedraw(0);
+      }
+      
+      // Create second label for spread, equity, and overall profit
+      string label2Name = "SpreadEquityLabel";
+      ObjectDelete(0, label2Name);
+      
+      double currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * _Point;
+      double overallProfit = equity - g_startingEquity;
+      string label2text = StringFormat("Spread:%.1f/%.1f | Equity:%.0f | Overall:%.0f", 
+            currentSpread/_Point, g_maxSpread/_Point, equity, overallProfit);
+      
+      if(ObjectCreate(0, label2Name, OBJ_LABEL, 0, 0, 0)) {
+         ObjectSetInteger(0, label2Name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+         ObjectSetInteger(0, label2Name, OBJPROP_XDISTANCE, 10);
+         ObjectSetInteger(0, label2Name, OBJPROP_YDISTANCE, 50);
+         color label2Color = (overallProfit >= 0) ? clrGreen : clrRed;
+         ObjectSetInteger(0, label2Name, OBJPROP_COLOR, label2Color);
+         ObjectSetInteger(0, label2Name, OBJPROP_FONTSIZE, 10);
+         ObjectSetString(0, label2Name, OBJPROP_FONT, "Arial Bold");
+         ObjectSetString(0, label2Name, OBJPROP_TEXT, label2text);
+         ObjectSetInteger(0, label2Name, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, label2Name, OBJPROP_HIDDEN, false);
+         ObjectSetInteger(0, label2Name, OBJPROP_BACK, false);
+         ObjectSetInteger(0, label2Name, OBJPROP_ZORDER, 0);
+         ChartRedraw(0);
+      }
+      
+      // Create third label for last 5 close-all profits
+      string label3Name = "Last5ClosesLabel";
+      ObjectDelete(0, label3Name);
+      
+      string label3text = "Last5 Closes: ";
+      for(int i = 0; i < 5; i++) {
+         if(i < g_closeCount) {
+            label3text += StringFormat("%.2f", g_last5Closes[i]);
+         } else {
+            label3text += "-";
+         }
+         if(i < 4) label3text += " | ";
+      }
+      
+      if(ObjectCreate(0, label3Name, OBJ_LABEL, 0, 0, 0)) {
+         ObjectSetInteger(0, label3Name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+         ObjectSetInteger(0, label3Name, OBJPROP_XDISTANCE, 10);
+         ObjectSetInteger(0, label3Name, OBJPROP_YDISTANCE, 70);
+         ObjectSetInteger(0, label3Name, OBJPROP_COLOR, clrYellow);
+         ObjectSetInteger(0, label3Name, OBJPROP_FONTSIZE, 9);
+         ObjectSetString(0, label3Name, OBJPROP_FONT, "Arial");
+         ObjectSetString(0, label3Name, OBJPROP_TEXT, label3text);
+         ObjectSetInteger(0, label3Name, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, label3Name, OBJPROP_HIDDEN, false);
+         ObjectSetInteger(0, label3Name, OBJPROP_BACK, false);
+         ObjectSetInteger(0, label3Name, OBJPROP_ZORDER, 0);
+      }
+      
+      // Create fourth label for last 5 days overall profit
+      string label4Name = "Last5DaysLabel";
+      ObjectDelete(0, label4Name);
+      
+      // Calculate current day's profit dynamically
+      double currentDayProfit = equity - g_startingEquity;
+      
+      string label4text = "Last5 Days: ";
+      // First show current day (index 0), then show previous 4 days from history
+      label4text += StringFormat("%.2f", currentDayProfit);  // Current day
+      for(int i = 0; i < 4; i++) {
+         label4text += " | ";
+         if(g_lastDay != -1) {
+            label4text += StringFormat("%.2f", g_dailyProfits[i]);
+         } else {
+            label4text += "-";
+         }
+      }
+      
+      if(ObjectCreate(0, label4Name, OBJ_LABEL, 0, 0, 0)) {
+         ObjectSetInteger(0, label4Name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+         ObjectSetInteger(0, label4Name, OBJPROP_XDISTANCE, 10);
+         ObjectSetInteger(0, label4Name, OBJPROP_YDISTANCE, 88);
+         ObjectSetInteger(0, label4Name, OBJPROP_COLOR, clrCyan);
+         ObjectSetInteger(0, label4Name, OBJPROP_FONTSIZE, 9);
+         ObjectSetString(0, label4Name, OBJPROP_FONT, "Arial");
+         ObjectSetString(0, label4Name, OBJPROP_TEXT, label4text);
+         ObjectSetInteger(0, label4Name, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, label4Name, OBJPROP_HIDDEN, false);
+         ObjectSetInteger(0, label4Name, OBJPROP_BACK, false);
+         ObjectSetInteger(0, label4Name, OBJPROP_ZORDER, 0);
+      }
+      
+      ChartRedraw(0);
+      
    }
 }
 void OnDeinit(const int reason) {
