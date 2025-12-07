@@ -27,7 +27,7 @@ input double MaxLossLimit = 9999999;       // Maximum loss limit
 input double DailyProfitTarget = 9999999;  // Daily profit target to stop trading
 
 // total Profit Trailing
- bool   EnableTotalTrailing = false;  // Enable total profit trailing
+ bool   EnableTotalTrailing = true;  // Enable total profit trailing
  double TrailStartPct = 0.10;        // Start trail at % of max loss (0.10 = 10%)
  double TrailProfitPct = 0.85;       // Start trail at % of max profit (0.85 = 85%)
  double TrailGapPct = 0.50;          // Trail gap as % of start value (0.50 = 50%)
@@ -37,11 +37,11 @@ input double DailyProfitTarget = 9999999;  // Daily profit target to stop tradin
  double SingleProfitThreshold = -1; // Profit per 0.01 lot to start trail (negative = auto-calc from gap)
 
 // Adaptive Gap
- bool   UseAdaptiveGap = true;       // Use ATR-based adaptive gap
+input bool   UseAdaptiveGap = false;       // Use ATR-based adaptive gap
  int    ATRPeriod = 14;              // ATR period for adaptive gap
  double ATRMultiplier = 1.5;         // ATR multiplier
- double MinGapPoints = 500.0;         // Minimum gap points
-double MaxGapPoints = 10000.0;        // Maximum gap points
+ double MinGapPoints = GapInPoints/2;         // Minimum gap points
+double MaxGapPoints = GapInPoints*1.10;        // Maximum gap points
 
 // Display Settings
 input bool   ShowLabels = true;         // Show chart labels (disable for performance)
