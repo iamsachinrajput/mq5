@@ -8,32 +8,40 @@
 //============================= INPUTS =============================//
 // Core Trading Parameters
 input int    Magic = 12345;               // Magic number
-input double GapInPoints = 100.0;         // Gap between levels in points
+input double GapInPoints = 1000.0;         // Gap between levels in points
 input double BaseLotSize = 0.01;          // Starting lot size
 input int    DebugLevel = 0;              // Debug level (0=off, 1=critical, 2=info, 3=verbose)
 
-// Risk Management (simplified)
-input int    MaxPositions = 1000;         // Maximum open positions
-input double MaxTotalLots = 500.0;        // Maximum total lot exposure
-input double MaxLossLimit = 5000.0;       // Maximum loss limit
-input double DailyProfitTarget = 5000.0;  // Daily profit target to stop trading
+// Lot Calculation Method
+enum ENUM_LOT_METHOD {
+   LOT_METHOD_MAXORDERS_SWITCH = 0,    // Max Orders with Switch
+   LOT_METHOD_ORDERDIFF_SWITCH = 1,    // Order Difference with Switch
+   LOT_METHOD_HEDGE_SAMESIZE = 2       // Hedge Same Size on Switch
+};
+input ENUM_LOT_METHOD LotChangeMethod = LOT_METHOD_MAXORDERS_SWITCH; // Lot calculation method
 
-// Profit Trailing
+// Risk Management (simplified)
+input int    MaxPositions = 100000;         // Maximum open positions
+input double MaxTotalLots = 500000.0;        // Maximum total lot exposure
+input double MaxLossLimit = 500000.0;       // Maximum loss limit
+input double DailyProfitTarget = 5000000.0;  // Daily profit target to stop trading
+
+// total Profit Trailing
 input bool   EnableTotalTrailing = true;  // Enable total profit trailing
 input double TrailStartPct = 0.10;        // Start trail at % of max loss (0.10 = 10%)
 input double TrailProfitPct = 0.85;       // Start trail at % of max profit (0.85 = 85%)
 input double TrailGapPct = 0.50;          // Trail gap as % of start value (0.50 = 50%)
-input double MaxTrailGap = 250.0;         // Maximum trail gap (absolute cap)
+input double MaxTrailGap = 2500.0;         // Maximum trail gap (absolute cap)
 
 input bool   EnableSingleTrailing = true; // Enable single position trailing
-input double SingleProfitThreshold = 10.0; // Profit per 0.01 lot to start trail
+input double SingleProfitThreshold = 0.01; // Profit per 0.01 lot to start trail (negative = auto-calc from gap)
 
 // Adaptive Gap
 input bool   UseAdaptiveGap = true;       // Use ATR-based adaptive gap
 input int    ATRPeriod = 14;              // ATR period for adaptive gap
 input double ATRMultiplier = 1.5;         // ATR multiplier
-input double MinGapPoints = 50.0;         // Minimum gap points
-input double MaxGapPoints = 500.0;        // Maximum gap points
+input double MinGapPoints = 500.0;         // Minimum gap points
+input double MaxGapPoints =10000.0;        // Maximum gap points
 
 //============================= GLOBALS ============================//
 CTrade trade;
@@ -67,7 +75,8 @@ double g_maxLossCycle = 0.0;
 double g_maxProfitCycle = 0.0;
 double g_overallMaxProfit = 0.0;    // Maximum profit ever reached (from start)
 double g_overallMaxLoss = 0.0;      // Maximum loss ever reached (from start)
-double g_maxLotsCycle = 0.0;        // Maximum lot size used in current cycle
+double g_maxLotsCycle = 0.0;        // Maximum single lot size in current cycle
+double g_overallMaxLotSize = 0.0;   // Maximum single lot size ever used (never resets)
 
 // Single Trailing State
 struct SingleTrail {
@@ -104,6 +113,40 @@ double LevelPrice(int level, double gap) {
 
 double SafeDiv(double a, double b) {
    return (b == 0.0) ? 0.0 : (a / b);
+}
+
+//============================= SINGLE THRESHOLD CALCULATION ========//
+double CalculateSingleThreshold() {
+   // If positive input, use it directly
+   if(SingleProfitThreshold > 0) {
+      return SingleProfitThreshold;
+   }
+   
+   // Auto-calculate from gap: position should close just before next same-type order
+   // For a BUY position, next BUY is 2 gaps away (even levels)
+   // For a SELL position, next SELL is 2 gaps away (odd levels)
+   // Profit needed per 0.01 lot to reach 2 gaps in favorable direction
+   
+   double spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * _Point;
+   double gapDistance = 2.0 * g_adaptiveGap; // Distance to next same-type order
+   double priceMove = gapDistance - spread;  // Account for spread
+   
+   // Convert to profit per 0.01 lot
+   // For 0.01 lot, profit = price_move * contract_size * lot_size
+   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   
+   if(tickSize == 0) tickSize = _Point;
+   
+   double profitPer01 = (priceMove / tickSize) * tickValue * 0.01;
+   
+   // Safety minimum
+   if(profitPer01 < 0.01) profitPer01 = 0.01;
+   
+   Log(3, StringFormat("Auto-calc threshold: Gap=%.1f pts | Distance=%.1f | Spread=%.1f | Threshold=%.2f",
+       g_adaptiveGap/_Point, gapDistance/_Point, spread/_Point, profitPer01));
+   
+   return profitPer01;
 }
 
 //============================= ATR CALCULATION ====================//
@@ -158,27 +201,41 @@ void UpdatePositionStats() {
       }
    }
    
-         g_netLots = g_buyLots - g_sellLots;
-         
-         // Track max lots in cycle
-         double totalLots = g_buyLots + g_sellLots;
-         if(totalLots > g_maxLotsCycle) g_maxLotsCycle = totalLots;
-
-         // Profit views: overall P/L since start, cycle profit (booked+open), open vs booked breakdown
-         double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-         if(equity == 0) return;  // Account data not ready yet
-         
-         double overallProfit = equity - g_startingEquity;         // overall profit since EA started
-         double cycleProfit = equity - g_lastCloseEquity;         // current cycle profit (booked + open since last close-all)
-         double openProfit = g_totalProfit;                       // current open P/L
-         double bookedCycle = cycleProfit - openProfit;           // booked in this cycle
-         
-         // Track overall max profit/loss
-         if(overallProfit > g_overallMaxProfit) g_overallMaxProfit = overallProfit;
-         if(overallProfit < 0 && MathAbs(overallProfit) > g_overallMaxLoss) g_overallMaxLoss = MathAbs(overallProfit);
+   g_netLots = g_buyLots - g_sellLots;
    
-         Log(3, StringFormat("Stats B%d/%.2f S%d/%.2f N%.2f ML%.0f/%.0f MP=%.0f/%.0f P%.0f(%.0f+%.0f=%.2f)EQ=%.0f", 
-            g_buyCount, g_buyLots, g_sellCount, g_sellLots, g_netLots, -g_maxLossCycle, -g_overallMaxLoss,g_maxProfitCycle, g_overallMaxProfit, overallProfit, openProfit, bookedCycle, cycleProfit, equity));
+   // Track max single lot size in cycle and overall
+   double maxSingleLot = 0.0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
+      
+      double lots = PositionGetDouble(POSITION_VOLUME);
+      if(lots > maxSingleLot) maxSingleLot = lots;
+   }
+   if(maxSingleLot > g_maxLotsCycle) g_maxLotsCycle = maxSingleLot;
+   if(maxSingleLot > g_overallMaxLotSize) g_overallMaxLotSize = maxSingleLot;
+
+   // Profit views: overall P/L since start, cycle profit (booked+open), open vs booked breakdown
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(equity == 0) return;  // Account data not ready yet
+   
+   double overallProfit = equity - g_startingEquity;         // overall profit since EA started
+   double cycleProfit = equity - g_lastCloseEquity;         // current cycle profit (booked + open since last close-all)
+   double openProfit = g_totalProfit;                       // current open P/L
+   double bookedCycle = cycleProfit - openProfit;           // booked in this cycle
+   
+   // Track overall max profit/loss (update every tick, never reset)
+   if(overallProfit > g_overallMaxProfit) g_overallMaxProfit = overallProfit;
+   if(overallProfit < 0 && MathAbs(overallProfit) > g_overallMaxLoss) g_overallMaxLoss = MathAbs(overallProfit);
+   
+   // Track cycle max loss (resets on close-all)
+   if(cycleProfit < 0) {
+      double absLoss = MathAbs(cycleProfit);
+      if(absLoss > g_maxLossCycle) g_maxLossCycle = absLoss;
+   }   Log(3, StringFormat("Stats B%d/%.2f S%d/%.2f N%.2f ML%.0f/%.0f MP=%.0f/%.0f MaxLot%.2f/%.2f P%.0f(%.0f+%.0f=%.2f)EQ=%.0f", 
+      g_buyCount, g_buyLots, g_sellCount, g_sellLots, g_netLots, -g_maxLossCycle, -g_overallMaxLoss, g_maxProfitCycle, g_overallMaxProfit, g_maxLotsCycle, g_overallMaxLotSize, overallProfit, openProfit, bookedCycle, cycleProfit, equity));
 }
 
 //============================= RISK CHECK =========================//
@@ -201,10 +258,11 @@ void UpdateRiskStatus() {
 }
 
 //============================= LOT CALCULATION ====================//
-void CalculateNextLots() {
+// Method 1: Max Orders with Switch (original logic)
+void CalculateLots_MaxOrders_Switch() {
    int maxOrders = MathMax(g_buyCount, g_sellCount);
    
-   // Progressive sizing
+   // Progressive sizing based on max orders
    g_nextSellLot = BaseLotSize * (maxOrders + 1);
    g_nextBuyLot = BaseLotSize * (maxOrders + 1);
    
@@ -221,7 +279,50 @@ void CalculateNextLots() {
       g_nextSellLot = g_nextBuyLot;
       g_nextBuyLot = temp;
    }
+}
+
+// Method 2: Order Difference with Switch
+void CalculateLots_OrderDiff_Switch() {
+   int orderDiff = MathAbs(g_buyCount - g_sellCount);
    
+   // Progressive sizing based on order count difference
+   g_nextSellLot = BaseLotSize * (orderDiff + 1);
+   g_nextBuyLot = BaseLotSize * (orderDiff + 1);
+   
+   // Balance exposure
+   if(g_netLots > 0.01) {
+      g_nextBuyLot = 2 * g_nextSellLot + (g_netLots / 2);
+   } else if(g_netLots < -0.01) {
+      g_nextSellLot = 2 * g_nextBuyLot + (MathAbs(g_netLots) / 2);
+   }
+   
+   // Switch mode after 10 order difference
+   if(orderDiff >= 10 && MathAbs(g_netLots) > 0.01) {
+      double temp = g_nextSellLot;
+      g_nextSellLot = g_nextBuyLot;
+      g_nextBuyLot = temp;
+   }
+}
+
+// Method 3: Hedge Same Size on Switch
+void CalculateLots_Hedge_SameSize() {
+   int maxOrders = MathMax(g_buyCount, g_sellCount);
+   
+   // Progressive sizing - same for both directions
+   g_nextSellLot = BaseLotSize * (maxOrders + 1);
+   g_nextBuyLot = BaseLotSize * (maxOrders + 1);
+   
+   // Keep same size in both directions (no balancing)
+   // Switch triggered after 10 orders, but maintain equal sizing
+   if(maxOrders >= 10 && MathAbs(g_netLots) > 0.01) {
+      // Still apply base lot calculation, but keep them equal
+      double baseLot = BaseLotSize * (maxOrders + 1);
+      g_nextSellLot = baseLot;
+      g_nextBuyLot = baseLot;
+   }
+}
+
+void NormalizeLots() {
    // Normalize to broker requirements
    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    double stepLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
@@ -234,6 +335,103 @@ void CalculateNextLots() {
    g_nextSellLot = MathMax(g_nextSellLot, minLot);
    g_nextSellLot = MathRound(g_nextSellLot / stepLot) * stepLot;
    g_nextSellLot = MathMin(g_nextSellLot, maxLot);
+}
+
+void CalculateNextLots() {
+   // Call appropriate lot calculation method
+   switch(LotChangeMethod) {
+      case LOT_METHOD_MAXORDERS_SWITCH:
+         CalculateLots_MaxOrders_Switch();
+         break;
+      
+      case LOT_METHOD_ORDERDIFF_SWITCH:
+         CalculateLots_OrderDiff_Switch();
+         break;
+      
+      case LOT_METHOD_HEDGE_SAMESIZE:
+         CalculateLots_Hedge_SameSize();
+         break;
+      
+      default:
+         CalculateLots_MaxOrders_Switch();
+         break;
+   }
+   
+   // Normalize lots to broker requirements
+   NormalizeLots();
+}
+
+//============================= ORDER EXECUTION WITH LOT SPLITTING ==//
+bool ExecuteOrder(int orderType, double lotSize, string comment = "") {
+   if(lotSize <= 0) {
+      Log(1, "ExecuteOrder: Invalid lot size");
+      return false;
+   }
+   
+   double maxLotPerOrder = 20.0;
+   int ordersNeeded = (int)MathCeil(lotSize / maxLotPerOrder);
+   
+   if(ordersNeeded == 1) {
+      // Single order - execute directly
+      trade.SetExpertMagicNumber(Magic);
+      if(orderType == POSITION_TYPE_BUY) {
+         return trade.Buy(lotSize, _Symbol, 0, 0, 0, comment);
+      } else {
+         return trade.Sell(lotSize, _Symbol, 0, 0, 0, comment);
+      }
+   }
+   
+   // Multiple orders needed - split the lot size
+   double remainingLots = lotSize;
+   int successCount = 0;
+   
+   Log(2, StringFormat("ExecuteOrder: Splitting %.2f lots into %d orders (max %.2f per order)",
+       lotSize, ordersNeeded, maxLotPerOrder));
+   
+   for(int i = 0; i < ordersNeeded; i++) {
+      double currentLot = MathMin(remainingLots, maxLotPerOrder);
+      
+      // Normalize to broker requirements
+      double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+      double stepLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+      double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+      
+      currentLot = MathMax(currentLot, minLot);
+      currentLot = MathRound(currentLot / stepLot) * stepLot;
+      currentLot = MathMin(currentLot, maxLot);
+      
+      string orderComment = comment;
+      if(ordersNeeded > 1) {
+         orderComment = StringFormat("%s [%d/%d]", comment, i + 1, ordersNeeded);
+      }
+      
+      trade.SetExpertMagicNumber(Magic);
+      bool result = false;
+      
+      if(orderType == POSITION_TYPE_BUY) {
+         result = trade.Buy(currentLot, _Symbol, 0, 0, 0, orderComment);
+      } else {
+         result = trade.Sell(currentLot, _Symbol, 0, 0, 0, orderComment);
+      }
+      
+      if(result) {
+         successCount++;
+         remainingLots -= currentLot;
+         Log(2, StringFormat("ExecuteOrder: Order %d/%d placed: %.2f lots (%.2f remaining)",
+             i + 1, ordersNeeded, currentLot, remainingLots));
+      } else {
+         Log(1, StringFormat("ExecuteOrder: Failed to place order %d/%d: %.2f lots",
+             i + 1, ordersNeeded, currentLot));
+      }
+   }
+   
+   bool allSuccess = (successCount == ordersNeeded);
+   if(!allSuccess) {
+      Log(1, StringFormat("ExecuteOrder: Partial fill - %d/%d orders succeeded",
+          successCount, ordersNeeded));
+   }
+   
+   return allSuccess;
 }
 
 //============================= DUPLICATE CHECK ====================//
@@ -297,20 +495,22 @@ void PlaceGridOrders() {
    if(g_prevBid == 0.0) g_prevBid = nowBid;
    
    // BUY logic - price moving up
+   // BUY executes at ASK, so trigger should ensure ASK crosses level + half spread
    if(nowAsk > g_prevAsk) {
-      int Llo = PriceLevelIndex(MathMin(g_prevAsk, nowAsk) - spread, g_adaptiveGap) - 2;
-      int Lhi = PriceLevelIndex(MathMax(g_prevAsk, nowAsk) - spread, g_adaptiveGap) + 2;
+      int Llo = PriceLevelIndex(MathMin(g_prevAsk, nowAsk), g_adaptiveGap) - 2;
+      int Lhi = PriceLevelIndex(MathMax(g_prevAsk, nowAsk), g_adaptiveGap) + 2;
       
       for(int L = Llo; L <= Lhi; L++) {
          if(!IsEven(L)) continue;
          
-         double trigger = LevelPrice(L, g_adaptiveGap) + spread;
+         // BUY trigger: level price + half spread (so ASK crosses the level accounting for spread)
+         double trigger = LevelPrice(L, g_adaptiveGap) + (spread / 2.0);
          if(g_prevAsk <= trigger && nowAsk > trigger) {
             if(HasOrderOnLevel(POSITION_TYPE_BUY, L, g_adaptiveGap)) continue;
             if(HasOrderNearLevel(POSITION_TYPE_BUY, L, g_adaptiveGap, 1)) continue;
             
-            trade.SetExpertMagicNumber(Magic);
-            if(trade.Buy(g_nextBuyLot, _Symbol)) {
+            string orderComment = StringFormat("BUY L%d", L);
+            if(ExecuteOrder(POSITION_TYPE_BUY, g_nextBuyLot, orderComment)) {
                Log(1, StringFormat("BUY %.2f @ L%d (%.5f)", g_nextBuyLot, L, nowAsk));
             }
          }
@@ -318,20 +518,22 @@ void PlaceGridOrders() {
    }
    
    // SELL logic - price moving down
+   // SELL executes at BID, so trigger should ensure BID crosses level - half spread
    if(nowBid < g_prevBid) {
-      int Llo = PriceLevelIndex(MathMin(g_prevBid, nowBid) + spread, g_adaptiveGap) - 2;
-      int Lhi = PriceLevelIndex(MathMax(g_prevBid, nowBid) + spread, g_adaptiveGap) + 2;
+      int Llo = PriceLevelIndex(MathMin(g_prevBid, nowBid), g_adaptiveGap) - 2;
+      int Lhi = PriceLevelIndex(MathMax(g_prevBid, nowBid), g_adaptiveGap) + 2;
       
       for(int L = Lhi; L >= Llo; L--) {
          if(!IsOdd(L)) continue;
          
-         double trigger = LevelPrice(L, g_adaptiveGap) - spread;
+         // SELL trigger: level price - half spread (so BID crosses the level accounting for spread)
+         double trigger = LevelPrice(L, g_adaptiveGap) - (spread / 2.0);
          if(g_prevBid >= trigger && nowBid < trigger) {
             if(HasOrderOnLevel(POSITION_TYPE_SELL, L, g_adaptiveGap)) continue;
             if(HasOrderNearLevel(POSITION_TYPE_SELL, L, g_adaptiveGap, 1)) continue;
             
-            trade.SetExpertMagicNumber(Magic);
-            if(trade.Sell(g_nextSellLot, _Symbol)) {
+            string orderComment = StringFormat("SELL L%d", L);
+            if(ExecuteOrder(POSITION_TYPE_SELL, g_nextSellLot, orderComment)) {
                Log(1, StringFormat("SELL %.2f @ L%d (%.5f)", g_nextSellLot, L, nowBid));
             }
          }
@@ -359,11 +561,7 @@ void TrailTotalProfit() {
    double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
    double cycleProfit = currentEquity - g_lastCloseEquity;
    
-   // Track cycle extremes
-   if(cycleProfit < 0) {
-      double absLoss = MathAbs(cycleProfit);
-      if(absLoss > g_maxLossCycle) g_maxLossCycle = absLoss;
-   }
+   // Track cycle max profit
    if(cycleProfit > 0) {
       if(cycleProfit > g_maxProfitCycle) g_maxProfitCycle = cycleProfit;
    }
@@ -383,14 +581,22 @@ void TrailTotalProfit() {
    
    // Start trailing: should activate when cycle profit > (max profit already reached - some buffer)
    // Or when cycle profit exceeds max loss recovery + buffer
+   // Also check: net lots must be at least 2x base lot size to avoid balanced positions
+   double minNetLots = BaseLotSize * 2.0;
+   bool hasSignificantExposure = MathAbs(g_netLots) >= minNetLots;
+   
    if(!g_trailActive && cycleProfit > g_trailStart && g_trailStart > 0) {
-      g_trailActive = true;
-      g_trailPeak = cycleProfit;
-      g_trailFloor = g_trailPeak - g_trailGap;
-      double lossStart = g_maxLossCycle * TrailStartPct;
-      double profitStart = g_maxProfitCycle * 1.0;
-      Log(1, StringFormat("Trail START: profit=%.2f start=%.2f gap=%.2f floor=%.2f | MaxLoss=%.2f LossStart=%.2f MaxProfit=%.2f ProfitStart=%.2f", 
-          cycleProfit, g_trailStart, g_trailGap, g_trailFloor, g_maxLossCycle, lossStart, g_maxProfitCycle, profitStart));
+      if(!hasSignificantExposure) {
+         Log(2, StringFormat("Trail BLOCKED: Net lots %.2f < minimum %.2f (too balanced)", MathAbs(g_netLots), minNetLots));
+      } else {
+         g_trailActive = true;
+         g_trailPeak = cycleProfit;
+         g_trailFloor = g_trailPeak - g_trailGap;
+         double lossStart = g_maxLossCycle * TrailStartPct;
+         double profitStart = g_maxProfitCycle * 1.0;
+         Log(1, StringFormat("Trail START: profit=%.2f start=%.2f gap=%.2f floor=%.2f | NetLots=%.2f | MaxLoss=%.2f LossStart=%.2f MaxProfit=%.2f ProfitStart=%.2f", 
+             cycleProfit, g_trailStart, g_trailGap, g_trailFloor, MathAbs(g_netLots), g_maxLossCycle, lossStart, g_maxProfitCycle, profitStart));
+      }
    }
    
    // Update trail
@@ -502,6 +708,9 @@ void TrailSinglePositions() {
    if(!EnableSingleTrailing) return;
    if(g_trailActive) return; // Skip when total trailing active
    
+   // Get effective threshold (auto-calc if input is negative)
+   double effectiveThreshold = CalculateSingleThreshold();
+   
    int currentTick = (int)GetTickCount();  // For throttling logs
    
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
@@ -519,12 +728,12 @@ void TrailSinglePositions() {
       int idx = FindTrailIndex(ticket);
       
       // Start tracking only when profit reaches threshold
-      if(profitPer01 >= SingleProfitThreshold && idx < 0) {
-         AddTrail(ticket, profitPer01, SingleProfitThreshold);
+      if(profitPer01 >= effectiveThreshold && idx < 0) {
+         AddTrail(ticket, profitPer01, effectiveThreshold);
          idx = FindTrailIndex(ticket);
-         double gapValue = SingleProfitThreshold / 2.0;
+         double gapValue = effectiveThreshold / 2.0;
          Log(2, StringFormat("Trail START #%I64u PPL=%.2f | Threshold=%.2f Gap=%.2f ActivateAt=%.2f", 
-             ticket, profitPer01, SingleProfitThreshold, gapValue, SingleProfitThreshold / 2.0));
+             ticket, profitPer01, effectiveThreshold, gapValue, effectiveThreshold / 2.0));
       }
       
       // Update tracking
@@ -543,8 +752,8 @@ void TrailSinglePositions() {
          
          // Activate when drops to half threshold OR when peak reaches 2x threshold
          // This ensures high-profit positions also trail
-         double activationThreshold = SingleProfitThreshold / 2.0;
-         bool shouldActivate = (profitPer01 <= activationThreshold && profitPer01 > 0) || (peak >= SingleProfitThreshold * 2.0);
+         double activationThreshold = effectiveThreshold / 2.0;
+         bool shouldActivate = (profitPer01 <= activationThreshold && profitPer01 > 0) || (peak >= effectiveThreshold * 2.0);
          
          if(!active && shouldActivate) {
             g_trails[idx].active = true;
