@@ -8,9 +8,9 @@
 //============================= INPUTS =============================//
 // Core Trading Parameters
 input int    Magic = 12345;               // Magic number
-input double GapInPoints = 3000.0;         // Gap between levels in points
+input double GapInPoints = 100;         // Gap xau100 btc1000
 input double BaseLotSize = 0.01;          // Starting lot size
-input int    DebugLevel = 2;              // Debug level (0=off, 1=critical, 2=info, 3=verbose)
+input int    DebugLevel = 1;              // Debug level (0=off, 1=critical, 2=info, 3=verbose)
 
 // Lot Calculation Method
 enum ENUM_LOT_METHOD {
@@ -21,7 +21,7 @@ enum ENUM_LOT_METHOD {
    LOT_METHOD_GLO_BASED = 4            // Global Loss Orders Based
 };
 input ENUM_LOT_METHOD LotChangeMethod = LOT_METHOD_GLO_BASED; // Lot calculation method
-input int    SwitchModeCount = 10;          // Switch mode trigger count
+input int    SwitchModeCount = 20;          // Switch mode trigger count
 
 // Risk Management (simplified)
 input int    MaxPositions = 9999999;         // Maximum open positions
@@ -43,7 +43,7 @@ enum ENUM_TRAIL_ORDER_MODE {
    TRAIL_ORDERS_PROFIT_DIR = 3,     // Allow only profit direction orders with base lot size
    TRAIL_ORDERS_REVERSE_DIR = 4     // Allow only reverse direction orders with base lot size
 };
-input ENUM_TRAIL_ORDER_MODE TrailOrderMode = TRAIL_ORDERS_NONE;  // Order behavior during total trailing
+input ENUM_TRAIL_ORDER_MODE TrailOrderMode = TRAIL_ORDERS_PROFIT_DIR;  // Order behavior during total trailing
 
  bool   EnableSingleTrailing = true; // Enable single position trailing
  input double SingleProfitThreshold = -1; // Profit per 0.01 lot to start trail (negative = auto-calc from gap)
@@ -92,7 +92,12 @@ bool g_tradingAllowed = true;
 bool g_stopNewOrders = false;    // If true: no new orders, only manage existing
 bool g_noWork = false;           // If true: no new orders, no closing, only display
 datetime g_closeAllClickTime = 0; // Track first click time for double-click protection
+datetime g_stopNewOrdersClickTime = 0; // Track first click time for Stop New Orders
+datetime g_noWorkClickTime = 0;   // Track first click time for No Work
+bool g_pendingStopNewOrders = false; // Pending action after next close-all
+bool g_pendingNoWork = false;    // Pending action after next close-all
 bool g_showLabels = true;        // If true: show all labels, if false: hide for performance
+bool g_showNextLevelLines = true; // If true: show and calculate next level lines (toggle via button)
 
 // Total Trailing State
 bool   g_trailActive = false;
@@ -121,7 +126,7 @@ double g_lastDayEquity = 0.0;       // Equity at start of current day
 double g_historySymbolDaily[5];     // Last 5 days symbol-specific profits from history
 double g_historyOverallDaily[5];    // Last 5 days overall profits from history
 
-// Single Trailing State
+// STing State
 struct SingleTrail {
    ulong  ticket;
    double peakPPL;
@@ -214,6 +219,21 @@ void CreateButtons() {
       ObjectSetInteger(0, btn4Name, OBJPROP_HIDDEN, false);
    }
    
+   // Button 5: Toggle Next Level Lines
+   string btn5Name = "BtnToggleNextLines";
+   if(ObjectFind(0, btn5Name) < 0) {
+      ObjectCreate(0, btn5Name, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, btn5Name, OBJPROP_XDISTANCE, rightMargin);
+      ObjectSetInteger(0, btn5Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 4);
+      ObjectSetInteger(0, btn5Name, OBJPROP_XSIZE, buttonWidth);
+      ObjectSetInteger(0, btn5Name, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetInteger(0, btn5Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetInteger(0, btn5Name, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, btn5Name, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, btn5Name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, btn5Name, OBJPROP_HIDDEN, false);
+   }
+   
    UpdateButtonStates();
 }
 
@@ -265,6 +285,20 @@ void UpdateButtonStates() {
       ObjectSetInteger(0, btn4Name, OBJPROP_BGCOLOR, clrDarkGray);
       ObjectSetInteger(0, btn4Name, OBJPROP_COLOR, clrWhite);
       ObjectSetInteger(0, btn4Name, OBJPROP_STATE, false);
+   }
+   
+   // Update Button 5: Toggle Next Level Lines
+   string btn5Name = "BtnToggleNextLines";
+   if(g_showNextLevelLines) {
+      ObjectSetString(0, btn5Name, OBJPROP_TEXT, "Next Lines [ON]");
+      ObjectSetInteger(0, btn5Name, OBJPROP_BGCOLOR, clrBlue);
+      ObjectSetInteger(0, btn5Name, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btn5Name, OBJPROP_STATE, true);
+   } else {
+      ObjectSetString(0, btn5Name, OBJPROP_TEXT, "Show Next Lines");
+      ObjectSetInteger(0, btn5Name, OBJPROP_BGCOLOR, clrDarkGray);
+      ObjectSetInteger(0, btn5Name, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btn5Name, OBJPROP_STATE, false);
    }
    
    ChartRedraw(0);
@@ -573,7 +607,7 @@ void UpdatePositionStats() {
          // Create vline when max loss increases and exceeds threshold
          if(absLoss >= MaxLossVlineThreshold && absLoss > g_lastMaxLossVline) {
             datetime nowTime = TimeCurrent();
-            string vlineName = StringFormat("MaxLoss_%.0f_E%.0f", absLoss, equity);
+            string vlineName = StringFormat("maxloss_%.0f",  g_lastCloseEquity);
             
             // Delete old if exists
             ObjectDelete(0, vlineName);
@@ -589,11 +623,11 @@ void UpdatePositionStats() {
                ObjectSetInteger(0, vlineName, OBJPROP_BACK, true);
                ObjectSetInteger(0, vlineName, OBJPROP_SELECTABLE, false);
                
-               string vlineText = StringFormat("MaxLoss: %.2f | Overall: %.2f", absLoss, g_overallMaxLoss);
+               string vlineText = StringFormat("MaxLoss: %.2f | Overall: %.2f | Equity: %.2f", absLoss, g_overallMaxLoss, equity);
                ObjectSetString(0, vlineName, OBJPROP_TEXT, vlineText);
                
-               Log(2, StringFormat("MaxLoss VLine: %.2f (color: %s) | Overall: %.2f", 
-                   absLoss, (absLoss >= g_overallMaxLoss) ? "RED" : "PINK", g_overallMaxLoss));
+               Log(2, StringFormat("MaxLoss VLine: %.2f (color: %s) | Overall: %.2f | Equity: %.2f", 
+                   absLoss, (absLoss >= g_overallMaxLoss) ? "RED" : "PINK", g_overallMaxLoss, equity));
             }
             
             g_lastMaxLossVline = absLoss;
@@ -990,7 +1024,6 @@ void PlaceGridOrders() {
          double trigger = LevelPrice(L, g_adaptiveGap) + (spread / 2.0);
          if(g_prevAsk <= trigger && nowAsk > trigger) {
             if(HasOrderOnLevel(POSITION_TYPE_BUY, L, g_adaptiveGap)) continue;
-            if(HasOrderNearLevel(POSITION_TYPE_BUY, L, g_adaptiveGap, 1)) continue;
             
             double equity = AccountInfoDouble(ACCOUNT_EQUITY);
             double cycleProfit = equity - g_lastCloseEquity;
@@ -1019,7 +1052,6 @@ void PlaceGridOrders() {
          double trigger = LevelPrice(L, g_adaptiveGap) - (spread / 2.0);
          if(g_prevBid >= trigger && nowBid < trigger) {
             if(HasOrderOnLevel(POSITION_TYPE_SELL, L, g_adaptiveGap)) continue;
-            if(HasOrderNearLevel(POSITION_TYPE_SELL, L, g_adaptiveGap, 1)) continue;
             
             double equity = AccountInfoDouble(ACCOUNT_EQUITY);
             double cycleProfit = equity - g_lastCloseEquity;
@@ -1037,6 +1069,122 @@ void PlaceGridOrders() {
    
    g_prevAsk = nowAsk;
    g_prevBid = nowBid;
+}
+
+//============================= NEXT LEVEL LINES ===================//
+// Resource-intensive function: calculates next available order levels
+// Only runs when g_showNextLevelLines is true (controlled by button)
+void UpdateNextLevelLines() {
+   // Early exit if disabled - no calculations, no display
+   if(!g_showNextLevelLines) {
+      ObjectDelete(0, "NextBuyLevelUp");
+      ObjectDelete(0, "NextBuyLevelDown");
+      ObjectDelete(0, "NextSellLevelUp");
+      ObjectDelete(0, "NextSellLevelDown");
+      return;
+   }
+   
+   double nowAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double nowBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double spread = nowAsk - nowBid;
+   
+   // Find next available BUY level upward (check for existing orders)
+   int nextBuyLevelUp = PriceLevelIndex(nowAsk, g_adaptiveGap);
+   if(!IsEven(nextBuyLevelUp)) nextBuyLevelUp++;
+   // Skip levels that already have orders (check both exact level and nearby)
+   while((HasOrderOnLevel(POSITION_TYPE_BUY, nextBuyLevelUp, g_adaptiveGap) || 
+          HasOrderNearLevel(POSITION_TYPE_BUY, nextBuyLevelUp, g_adaptiveGap, 1)) && 
+         nextBuyLevelUp < 10000) {
+      nextBuyLevelUp += 2; // BUY levels are even, increment by 2
+   }
+   double nextBuyPriceUp = LevelPrice(nextBuyLevelUp, g_adaptiveGap) + (spread / 2.0);
+   
+   // Find next available BUY level downward
+   int nextBuyLevelDown = PriceLevelIndex(nowAsk, g_adaptiveGap);
+   if(!IsEven(nextBuyLevelDown)) nextBuyLevelDown--;
+   else nextBuyLevelDown -= 2;
+   // Skip levels that already have orders (check both exact level and nearby)
+   while((HasOrderOnLevel(POSITION_TYPE_BUY, nextBuyLevelDown, g_adaptiveGap) || 
+          HasOrderNearLevel(POSITION_TYPE_BUY, nextBuyLevelDown, g_adaptiveGap, 1)) && 
+         nextBuyLevelDown > -10000) {
+      nextBuyLevelDown -= 2; // BUY levels are even, decrement by 2
+   }
+   double nextBuyPriceDown = LevelPrice(nextBuyLevelDown, g_adaptiveGap) + (spread / 2.0);
+   
+   // Find next available SELL level upward
+   int nextSellLevelUp = PriceLevelIndex(nowBid, g_adaptiveGap);
+   if(!IsOdd(nextSellLevelUp)) nextSellLevelUp++;
+   else nextSellLevelUp += 2;
+   // Skip levels that already have orders (check both exact level and nearby)
+   while((HasOrderOnLevel(POSITION_TYPE_SELL, nextSellLevelUp, g_adaptiveGap) || 
+          HasOrderNearLevel(POSITION_TYPE_SELL, nextSellLevelUp, g_adaptiveGap, 1)) && 
+         nextSellLevelUp < 10000) {
+      nextSellLevelUp += 2; // SELL levels are odd, increment by 2
+   }
+   double nextSellPriceUp = LevelPrice(nextSellLevelUp, g_adaptiveGap) - (spread / 2.0);
+   
+   // Find next available SELL level downward
+   int nextSellLevelDown = PriceLevelIndex(nowBid, g_adaptiveGap);
+   if(!IsOdd(nextSellLevelDown)) nextSellLevelDown--;
+   // Skip levels that already have orders (check both exact level and nearby)
+   while((HasOrderOnLevel(POSITION_TYPE_SELL, nextSellLevelDown, g_adaptiveGap) || 
+          HasOrderNearLevel(POSITION_TYPE_SELL, nextSellLevelDown, g_adaptiveGap, 1)) && 
+         nextSellLevelDown > -10000) {
+      nextSellLevelDown -= 2; // SELL levels are odd, decrement by 2
+   }
+   double nextSellPriceDown = LevelPrice(nextSellLevelDown, g_adaptiveGap) - (spread / 2.0);
+   
+   // Create/Update BUY level line (upward) - Light Blue
+   string buyLineNameUp = "NextBuyLevelUp";
+   if(ObjectFind(0, buyLineNameUp) < 0) {
+      ObjectCreate(0, buyLineNameUp, OBJ_HLINE, 0, 0, nextBuyPriceUp);
+      ObjectSetInteger(0, buyLineNameUp, OBJPROP_COLOR, clrLightBlue);
+      ObjectSetInteger(0, buyLineNameUp, OBJPROP_WIDTH, 1);
+      ObjectSetInteger(0, buyLineNameUp, OBJPROP_STYLE, STYLE_DASH);
+      ObjectSetInteger(0, buyLineNameUp, OBJPROP_BACK, true);
+      ObjectSetInteger(0, buyLineNameUp, OBJPROP_SELECTABLE, false);
+   }
+   ObjectSetDouble(0, buyLineNameUp, OBJPROP_PRICE, nextBuyPriceUp);
+   ObjectSetString(0, buyLineNameUp, OBJPROP_TEXT, StringFormat("Next BUY ↑ L%d @ %.5f (Gap:%.1f)", nextBuyLevelUp, nextBuyPriceUp, g_adaptiveGap/_Point));
+   
+   // Create/Update BUY level line (downward) - Light Blue
+   string buyLineNameDown = "NextBuyLevelDown";
+   if(ObjectFind(0, buyLineNameDown) < 0) {
+      ObjectCreate(0, buyLineNameDown, OBJ_HLINE, 0, 0, nextBuyPriceDown);
+      ObjectSetInteger(0, buyLineNameDown, OBJPROP_COLOR, clrLightBlue);
+      ObjectSetInteger(0, buyLineNameDown, OBJPROP_WIDTH, 1);
+      ObjectSetInteger(0, buyLineNameDown, OBJPROP_STYLE, STYLE_DASH);
+      ObjectSetInteger(0, buyLineNameDown, OBJPROP_BACK, true);
+      ObjectSetInteger(0, buyLineNameDown, OBJPROP_SELECTABLE, false);
+   }
+   ObjectSetDouble(0, buyLineNameDown, OBJPROP_PRICE, nextBuyPriceDown);
+   ObjectSetString(0, buyLineNameDown, OBJPROP_TEXT, StringFormat("Next BUY ↓ L%d @ %.5f (Gap:%.1f)", nextBuyLevelDown, nextBuyPriceDown, g_adaptiveGap/_Point));
+   
+   // Create/Update SELL level line (upward) - Pink
+   string sellLineNameUp = "NextSellLevelUp";
+   if(ObjectFind(0, sellLineNameUp) < 0) {
+      ObjectCreate(0, sellLineNameUp, OBJ_HLINE, 0, 0, nextSellPriceUp);
+      ObjectSetInteger(0, sellLineNameUp, OBJPROP_COLOR, clrPink);
+      ObjectSetInteger(0, sellLineNameUp, OBJPROP_WIDTH, 1);
+      ObjectSetInteger(0, sellLineNameUp, OBJPROP_STYLE, STYLE_DASH);
+      ObjectSetInteger(0, sellLineNameUp, OBJPROP_BACK, true);
+      ObjectSetInteger(0, sellLineNameUp, OBJPROP_SELECTABLE, false);
+   }
+   ObjectSetDouble(0, sellLineNameUp, OBJPROP_PRICE, nextSellPriceUp);
+   ObjectSetString(0, sellLineNameUp, OBJPROP_TEXT, StringFormat("Next SELL ↑ L%d @ %.5f (Gap:%.1f)", nextSellLevelUp, nextSellPriceUp, g_adaptiveGap/_Point));
+   
+   // Create/Update SELL level line (downward) - Pink
+   string sellLineNameDown = "NextSellLevelDown";
+   if(ObjectFind(0, sellLineNameDown) < 0) {
+      ObjectCreate(0, sellLineNameDown, OBJ_HLINE, 0, 0, nextSellPriceDown);
+      ObjectSetInteger(0, sellLineNameDown, OBJPROP_COLOR, clrPink);
+      ObjectSetInteger(0, sellLineNameDown, OBJPROP_WIDTH, 1);
+      ObjectSetInteger(0, sellLineNameDown, OBJPROP_STYLE, STYLE_DASH);
+      ObjectSetInteger(0, sellLineNameDown, OBJPROP_BACK, true);
+      ObjectSetInteger(0, sellLineNameDown, OBJPROP_SELECTABLE, false);
+   }
+   ObjectSetDouble(0, sellLineNameDown, OBJPROP_PRICE, nextSellPriceDown);
+   ObjectSetString(0, sellLineNameDown, OBJPROP_TEXT, StringFormat("Next SELL ↓ L%d @ %.5f (Gap:%.1f)", nextSellLevelDown, nextSellPriceDown, g_adaptiveGap/_Point));
 }
 
 //============================= CLOSE ALL WRAPPER ==================//
@@ -1089,7 +1237,7 @@ void PerformCloseAll(string reason = "Manual") {
       ObjectSetInteger(0, vlineName, OBJPROP_BACK, true);
       ObjectSetInteger(0, vlineName, OBJPROP_SELECTABLE, false);
       string vlinetext = StringFormat("P:%.2f/%.2f/%.2f(L%.2f)ML%.2f/%.2f L%.2f/%.2f", 
-            cycleProfit, g_trailPeak - cycleProfit, g_trailPeak, bookedCycle, 
+            cycleProfit, g_trailFloor, g_trailPeak, bookedCycle, 
             -g_maxLossCycle, -g_overallMaxLoss, g_maxLotsCycle, g_overallMaxLotSize);
       ObjectSetString(0, vlineName, OBJPROP_TEXT, vlinetext);
       ChartRedraw(0);
@@ -1119,6 +1267,22 @@ void PerformCloseAll(string reason = "Manual") {
    g_trailPeak = 0.0;
    g_trailFloor = 0.0;
    
+   // Apply pending button actions (single-click delayed actions)
+   if(g_pendingStopNewOrders) {
+      g_stopNewOrders = true;
+      g_noWork = false; // Ensure mutual exclusivity
+      g_pendingStopNewOrders = false;
+      UpdateButtonStates();
+      Log(1, "Pending Stop New Orders: ENABLED after close-all");
+   }
+   if(g_pendingNoWork) {
+      g_noWork = true;
+      g_stopNewOrders = false; // Ensure mutual exclusivity
+      g_pendingNoWork = false;
+      UpdateButtonStates();
+      Log(1, "Pending No Work Mode: ENABLED after close-all");
+   }
+   
    Log(1, StringFormat("Cycle RESET: new equity=%.2f | Close count=%d", g_lastCloseEquity, g_closeCount));
 }
 
@@ -1133,7 +1297,7 @@ void TrailTotalProfit() {
    int totalPos = g_buyCount + g_sellCount;
    if(totalPos < 3) {
       if(g_trailActive) {
-         Log(2, "Total Trail deactivated: insufficient positions");
+         Log(2, "TT deactivated: insufficient positions");
          g_trailActive = false;
       }
       return;
@@ -1152,7 +1316,7 @@ void TrailTotalProfit() {
    }
    
    // Debug: show trail decision values
-   Log(3, StringFormat("Total Trail DEBUG: cycleProfit=%.2f | MaxLoss=%.2f(start=%.2f) MaxProfit=%.2f(start=%.2f) | trailStart=%.2f | active=%d", 
+   Log(3, StringFormat("TT: cycleProfit=%.2f | MaxLoss=%.2f(start=%.2f) MaxProfit=%.2f(start=%.2f) | trailStart=%.2f | active=%d", 
        cycleProfit, -g_maxLossCycle, -lossStart, g_maxProfitCycle, profitStart, g_trailStart, g_trailActive ? 1 : 0));
    
    // Start trailing: should activate when cycle profit > (max profit already reached - some buffer)
@@ -1163,14 +1327,14 @@ void TrailTotalProfit() {
    
    if(!g_trailActive && cycleProfit > g_trailStart && g_trailStart > 0) {
       if(!hasSignificantExposure) {
-         Log(2, StringFormat("Total Trail BLOCKED: Net lots %.2f < minimum %.2f (too balanced)", MathAbs(g_netLots), minNetLots));
+         Log(2, StringFormat("TT BLOCKED: Net lots %.2f < minimum %.2f (too balanced)", MathAbs(g_netLots), minNetLots));
       } else {
          g_trailActive = true;
          g_trailPeak = cycleProfit;
          g_trailFloor = g_trailPeak - g_trailGap;
          double lossStart = g_maxLossCycle * TrailStartPct;
          double profitStart = g_maxProfitCycle * 1.0;
-         Log(1, StringFormat("Total Trail START: profit=%.2f start=%.2f gap=%.2f floor=%.2f | NetLots=%.2f | MaxLoss=%.2f LossStart=%.2f MaxProfit=%.2f ProfitStart=%.2f", 
+         Log(1, StringFormat("TT START: profit=%.2f start=%.2f gap=%.2f floor=%.2f | NetLots=%.2f | MaxLoss=%.2f LossStart=%.2f MaxProfit=%.2f ProfitStart=%.2f", 
              cycleProfit, g_trailStart, g_trailGap, g_trailFloor, MathAbs(g_netLots), g_maxLossCycle, lossStart, g_maxProfitCycle, profitStart));
       }
    }
@@ -1180,7 +1344,7 @@ void TrailTotalProfit() {
       if(cycleProfit > g_trailPeak) {
          g_trailPeak = cycleProfit;
          g_trailFloor = g_trailPeak - g_trailGap;
-         Log(2, StringFormat("Total Trail UPDATE: peak=%.2f floor=%.2f", g_trailPeak, g_trailFloor));
+         Log(2, StringFormat("TT UPDATE: peak=%.2f floor=%.2f", g_trailPeak, g_trailFloor));
       }
       
       // Check for close trigger
@@ -1256,7 +1420,7 @@ void TrailSinglePositions() {
          AddTrail(ticket, profitPer01, effectiveThreshold);
          idx = FindTrailIndex(ticket);
          double gapValue = effectiveThreshold / 2.0;
-         Log(2, StringFormat("Single Trail START #%I64u PPL=%.2f | Threshold=%.2f Gap=%.2f ActivateAt=%.2f", 
+         Log(2, StringFormat("ST START #%I64u PPL=%.2f | Threshold=%.2f Gap=%.2f ActivateAt=%.2f", 
              ticket, profitPer01, effectiveThreshold, gapValue, effectiveThreshold / 2.0));
       }
       
@@ -1271,7 +1435,7 @@ void TrailSinglePositions() {
          if(!active && profitPer01 > 0 && profitPer01 > peak) {
             g_trails[idx].peakPPL = profitPer01;
             peak = profitPer01;
-            Log(3, StringFormat("single Trail PEAK TRACK #%I64u peak=%.2f | AwaitingActivation", ticket, peak));
+            Log(3, StringFormat("ST TRACK #%I64u peak=%.2f | AwaitingActivation", ticket, peak));
          }
          
          // Activate when drops to half threshold OR when peak reaches 2x threshold
@@ -1284,7 +1448,7 @@ void TrailSinglePositions() {
             g_trails[idx].activePeak = peak;  // Set peak at activation point (use tracked peak, not current)
             active = true;
             activePeak = peak;
-            Log(1, StringFormat("Single Trail ACTIVE #%I64u peak=%.2f | Current=%.2f | Ready to Trail", 
+            Log(1, StringFormat("ST ACTIVE #%I64u peak=%.2f | Current=%.2f | Ready to Trail", 
                 ticket, activePeak, profitPer01));
          }
          
@@ -1292,14 +1456,14 @@ void TrailSinglePositions() {
          if(active && profitPer01 > activePeak) {
             g_trails[idx].activePeak = profitPer01;
             activePeak = profitPer01;
-            Log(2, StringFormat("Single Trail PEAK UPDATE #%I64u peak=%.2f", ticket, activePeak));
+            Log(2, StringFormat("ST PEAK UPDATE #%I64u peak=%.2f", ticket, activePeak));
          }
          
          // Show continuous trail status when active (throttle to avoid spam - every 500ms)
          if(active) {
             double trailFloorValue = activePeak - gap;
             if(currentTick - g_trails[idx].lastLogTick >= 500) {  // Log every 500ms
-               Log(3, StringFormat("Single Trail STATUS #%I64u | Peak=%.2f Current=%.2f Floor=%.2f Drop=%.2f", 
+               Log(3, StringFormat("ST STATUS #%I64u | Peak=%.2f Current=%.2f Floor=%.2f Drop=%.2f", 
                    ticket, activePeak, profitPer01, trailFloorValue, activePeak - profitPer01));
                g_trails[idx].lastLogTick = currentTick;
             }
@@ -1312,7 +1476,7 @@ void TrailSinglePositions() {
                double posProfit = PositionGetDouble(POSITION_PROFIT);
                double drop = activePeak - profitPer01;
                
-               Log(1, StringFormat("Single Trail CLOSE #%I64u %s %.2f lots | Profit=%.2f | Trail Stats: Peak=%.2f Current=%.2f Drop=%.2f TrailMin=%.2f", 
+               Log(1, StringFormat("ST CLOSE #%I64u %s %.2f lots | Profit=%.2f | Trail Stats: Peak=%.2f Current=%.2f Drop=%.2f TrailMin=%.2f", 
                    ticket, posType, posLots, posProfit, activePeak, profitPer01, drop, trailFloorValue));
                
                if(trade.PositionClose(ticket)) {
@@ -1326,7 +1490,7 @@ void TrailSinglePositions() {
    // Cleanup stale trails (positions that no longer exist)
    for(int j = ArraySize(g_trails) - 1; j >= 0; j--) {
       if(!PositionSelectByTicket(g_trails[j].ticket)) {
-         Log(2, StringFormat("Single Trail CLEANUP #%I64u (position closed)", g_trails[j].ticket));
+         Log(2, StringFormat("ST CLEANUP #%I64u (position closed)", g_trails[j].ticket));
          RemoveTrail(j);
       }
    }
@@ -1335,30 +1499,66 @@ void TrailSinglePositions() {
 //============================= CHART EVENT HANDLER ================//
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam) {
    if(id == CHARTEVENT_OBJECT_CLICK) {
-      // Button 1: Stop New Orders (toggle)
+      // Button 1: Stop New Orders (double-click: immediate, single-click: after next close-all)
       if(sparam == "BtnStopNewOrders") {
-         g_stopNewOrders = !g_stopNewOrders;
+         datetime currentTime = TimeCurrent();
          
-         // If activating Stop New Orders, deactivate No Work
-         if(g_stopNewOrders && g_noWork) {
-            g_noWork = false;
+         // Check if this is a double-click (within 2 seconds of first click)
+         if(g_stopNewOrdersClickTime > 0 && (currentTime - g_stopNewOrdersClickTime) <= 2) {
+            // Double-click confirmed - apply immediately
+            g_stopNewOrders = !g_stopNewOrders;
+            g_pendingStopNewOrders = false; // Cancel any pending action
+            
+            // If activating Stop New Orders, deactivate No Work
+            if(g_stopNewOrders && g_noWork) {
+               g_noWork = false;
+               g_pendingNoWork = false;
+            }
+            
+            g_stopNewOrdersClickTime = 0; // Reset click timer
+            UpdateButtonStates();
+            Log(1, StringFormat("Stop New Orders (IMMEDIATE): %s", g_stopNewOrders ? "ENABLED" : "DISABLED"));
+         } else {
+            // First click - schedule for next close-all
+            g_stopNewOrdersClickTime = currentTime;
+            g_pendingStopNewOrders = !g_stopNewOrders; // Toggle state
+            if(g_pendingStopNewOrders) {
+               g_pendingNoWork = false; // Cancel conflicting pending action
+            }
+            Log(1, StringFormat("Stop New Orders: Will %s after next Close-All (click again for immediate)", 
+                g_pendingStopNewOrders ? "ENABLE" : "DISABLE"));
          }
-         
-         UpdateButtonStates();
-         Log(1, StringFormat("Stop New Orders: %s", g_stopNewOrders ? "ENABLED" : "DISABLED"));
       }
       
-      // Button 2: No Work Mode (toggle)
+      // Button 2: No Work Mode (double-click: immediate, single-click: after next close-all)
       if(sparam == "BtnNoWork") {
-         g_noWork = !g_noWork;
+         datetime currentTime = TimeCurrent();
          
-         // If activating No Work, deactivate Stop New Orders
-         if(g_noWork && g_stopNewOrders) {
-            g_stopNewOrders = false;
+         // Check if this is a double-click (within 2 seconds of first click)
+         if(g_noWorkClickTime > 0 && (currentTime - g_noWorkClickTime) <= 2) {
+            // Double-click confirmed - apply immediately
+            g_noWork = !g_noWork;
+            g_pendingNoWork = false; // Cancel any pending action
+            
+            // If activating No Work, deactivate Stop New Orders
+            if(g_noWork && g_stopNewOrders) {
+               g_stopNewOrders = false;
+               g_pendingStopNewOrders = false;
+            }
+            
+            g_noWorkClickTime = 0; // Reset click timer
+            UpdateButtonStates();
+            Log(1, StringFormat("No Work Mode (IMMEDIATE): %s", g_noWork ? "ENABLED" : "DISABLED"));
+         } else {
+            // First click - schedule for next close-all
+            g_noWorkClickTime = currentTime;
+            g_pendingNoWork = !g_noWork; // Toggle state
+            if(g_pendingNoWork) {
+               g_pendingStopNewOrders = false; // Cancel conflicting pending action
+            }
+            Log(1, StringFormat("No Work Mode: Will %s after next Close-All (click again for immediate)", 
+                g_pendingNoWork ? "ENABLE" : "DISABLE"));
          }
-         
-         UpdateButtonStates();
-         Log(1, StringFormat("No Work Mode: %s", g_noWork ? "ENABLED" : "DISABLED"));
       }
       
       // Button 3: Close All (double-click protection)
@@ -1395,6 +1595,20 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          
          UpdateButtonStates();
          Log(1, StringFormat("Labels Display: %s", g_showLabels ? "ENABLED" : "DISABLED"));
+      }
+      
+      // Button 5: Toggle Next Level Lines
+      if(sparam == "BtnToggleNextLines") {
+         g_showNextLevelLines = !g_showNextLevelLines;
+         
+         if(!g_showNextLevelLines) {
+            // Lines will be deleted in UpdateNextLevelLines() on next call
+            Log(1, "Next Level Lines: DISABLED (calculations stopped)");
+         } else {
+            Log(1, "Next Level Lines: ENABLED (will show next available order levels)");
+         }
+         
+         UpdateButtonStates();
       }
    }
 }
@@ -1472,6 +1686,9 @@ void OnTick() {
    // Trail individual positions
    TrailSinglePositions();
    
+   // Update next level lines
+   UpdateNextLevelLines();
+   
    // Track daily profit (once per day)
    MqlDateTime dt;
    TimeCurrent(dt);
@@ -1547,8 +1764,13 @@ void UpdateCurrentProfitVline() {
       
       double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       if(ObjectCreate(0, vlineName, OBJ_VLINE, 0, nowTime+120, currentPrice)) {
-         // Color based on profit
-            color lineColor = (cycleProfit > 1.0) ? clrGreen : (cycleProfit < -1.0) ? clrRed : clrYellow;
+         // Color based on trail state and profit
+         color lineColor;
+         if(g_trailActive) {
+            lineColor = clrBlue; // Blue when trailing is active
+         } else {
+            lineColor = (cycleProfit > 1.0) ? clrGreen : (cycleProfit < -1.0) ? clrRed : clrYellow;
+         }
          ObjectSetInteger(0, vlineName, OBJPROP_COLOR, lineColor);
          
          // Width proportional to profit
@@ -1563,8 +1785,8 @@ void UpdateCurrentProfitVline() {
          int totalCount = g_buyCount + g_sellCount;
          double totalLots = g_buyLots + g_sellLots;
          string vlinetext = StringFormat("P:%.2f/%.2f/%.2f(L%.2f)ML%.2f/%.2f L%.2f/%.2f N:%d/%.2f/%.2f", 
-               cycleProfit,g_trailPeak - cycleProfit,g_trailPeak,bookedCycle, -g_maxLossCycle, -g_overallMaxLoss, 
-               g_maxLotsCycle,g_overallMaxLotSize,totalCount, g_netLots, totalLots);
+               cycleProfit, g_trailFloor, g_trailPeak, bookedCycle, -g_maxLossCycle, -g_overallMaxLoss, 
+               g_maxLotsCycle, g_overallMaxLotSize, totalCount, g_netLots, totalLots);
          ObjectSetString(0, vlineName, OBJPROP_TEXT, vlinetext);
       }
    } else {
@@ -1578,7 +1800,7 @@ void UpdateCurrentProfitVline() {
    if(g_noWork) modeIndicator = " [NO WORK]";
    else if(g_stopNewOrders) modeIndicator = " [MANAGE ONLY]";
    string vlinetext = StringFormat("P:%.0f/%.0f/%.0f(E%.0f)ML%.0f/%.0f L%.2f/%.2f%s", 
-         cycleProfit, g_trailPeak - cycleProfit, g_trailPeak, bookedCycle, -g_maxLossCycle, -g_overallMaxLoss, 
+         cycleProfit, g_trailFloor, g_trailPeak, bookedCycle, -g_maxLossCycle, -g_overallMaxLoss, 
          g_maxLotsCycle, g_overallMaxLotSize, modeIndicator);
    UpdateOrCreateLabel("CurrentProfitLabel", 10, 30, vlinetext, lineColor, 12, "Arial Bold");
    
@@ -1670,7 +1892,12 @@ void OnDeinit(const int reason) {
    ObjectDelete(0, "BtnNoWork");
    ObjectDelete(0, "BtnCloseAll");
    ObjectDelete(0, "BtnToggleLabels");
+   ObjectDelete(0, "BtnToggleNextLines");
    ObjectDelete(0, "CenterProfitLabel");
+   ObjectDelete(0, "NextBuyLevelUp");
+   ObjectDelete(0, "NextBuyLevelDown");
+   ObjectDelete(0, "NextSellLevelUp");
+   ObjectDelete(0, "NextSellLevelDown");
    
    string reasonText = "Unknown";
    switch(reason) {
