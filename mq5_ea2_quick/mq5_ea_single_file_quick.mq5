@@ -10,15 +10,18 @@
 input int    Magic = 12345;               // Magic number
 input double GapInPoints = 3000.0;         // Gap between levels in points
 input double BaseLotSize = 0.01;          // Starting lot size
-input int    DebugLevel = 0;              // Debug level (0=off, 1=critical, 2=info, 3=verbose)
+input int    DebugLevel = 2;              // Debug level (0=off, 1=critical, 2=info, 3=verbose)
 
 // Lot Calculation Method
 enum ENUM_LOT_METHOD {
    LOT_METHOD_MAXORDERS_SWITCH = 0,    // Max Orders with Switch
    LOT_METHOD_ORDERDIFF_SWITCH = 1,    // Order Difference with Switch
-   LOT_METHOD_HEDGE_SAMESIZE = 2       // Hedge Same Size on Switch
+   LOT_METHOD_HEDGE_SAMESIZE = 2,      // Hedge Same Size on Switch
+   LOT_METHOD_FIXED_LEVELS = 3,        // Fixed Levels Mode Switch
+   LOT_METHOD_GLO_BASED = 4            // Global Loss Orders Based
 };
-input ENUM_LOT_METHOD LotChangeMethod = LOT_METHOD_MAXORDERS_SWITCH; // Lot calculation method
+input ENUM_LOT_METHOD LotChangeMethod = LOT_METHOD_GLO_BASED; // Lot calculation method
+input int    SwitchModeCount = 10;          // Switch mode trigger count
 
 // Risk Management (simplified)
 input int    MaxPositions = 9999999;         // Maximum open positions
@@ -33,11 +36,20 @@ input double DailyProfitTarget = 9999999;  // Daily profit target to stop tradin
  double TrailGapPct = 0.50;          // Trail gap as % of start value (0.50 = 50%)
  double MaxTrailGap = 2500.0;         // Maximum trail gap (absolute cap)
 
+enum ENUM_TRAIL_ORDER_MODE {
+   TRAIL_ORDERS_NONE = 0,           // No new orders during trail
+   TRAIL_ORDERS_NORMAL = 1,         // Allow normal orders with calculated lot sizes
+   TRAIL_ORDERS_BASESIZE = 2,       // Allow orders but only with base lot size
+   TRAIL_ORDERS_PROFIT_DIR = 3,     // Allow only profit direction orders with base lot size
+   TRAIL_ORDERS_REVERSE_DIR = 4     // Allow only reverse direction orders with base lot size
+};
+input ENUM_TRAIL_ORDER_MODE TrailOrderMode = TRAIL_ORDERS_NONE;  // Order behavior during total trailing
+
  bool   EnableSingleTrailing = true; // Enable single position trailing
- double SingleProfitThreshold = -1; // Profit per 0.01 lot to start trail (negative = auto-calc from gap)
+ input double SingleProfitThreshold = -1; // Profit per 0.01 lot to start trail (negative = auto-calc from gap)
 
 // Adaptive Gap
-input bool   UseAdaptiveGap = false;       // Use ATR-based adaptive gap
+input bool   UseAdaptiveGap = true;       // Use ATR-based adaptive gap
  int    ATRPeriod = 14;              // ATR period for adaptive gap
  double ATRMultiplier = 1.5;         // ATR multiplier
  double MinGapPoints = GapInPoints/2;         // Minimum gap points
@@ -45,6 +57,7 @@ double MaxGapPoints = GapInPoints*1.10;        // Maximum gap points
 
 // Display Settings
 input bool   ShowLabels = true;         // Show chart labels (disable for performance)
+input double MaxLossVlineThreshold = 100.0;  // Min loss to show max loss vline (0 = always show)
 
 // Button Positioning
 input int    BtnXDistance = 200;         // Button X distance from right edge
@@ -70,6 +83,7 @@ double g_netLots = 0.0;
 double g_totalProfit = 0.0;
 double g_nextBuyLot = 0.01;
 double g_nextSellLot = 0.01;
+int    g_orders_in_loss = 0;    // Count of orders currently in loss (for GLO method)
 
 // Risk Status
 bool g_tradingAllowed = true;
@@ -95,6 +109,7 @@ double g_overallMaxLoss = 0.0;      // Maximum loss ever reached (from start)
 double g_maxLotsCycle = 0.0;        // Maximum single lot size in current cycle
 double g_overallMaxLotSize = 0.0;   // Maximum single lot size ever used (never resets)
 double g_maxSpread = 0.0;           // Maximum spread ever touched
+double g_lastMaxLossVline = 0.0;    // Last max loss level that had a vline created
 
 // History tracking
 double g_last5Closes[5];            // Last 5 close-all profits
@@ -103,6 +118,8 @@ double g_dailyProfits[5];           // Last 5 days daily profit changes
 int    g_lastDay = -1;              // Last recorded day
 int    g_dayIndex = 0;              // Current day index in array
 double g_lastDayEquity = 0.0;       // Equity at start of current day
+double g_historySymbolDaily[5];     // Last 5 days symbol-specific profits from history
+double g_historyOverallDaily[5];    // Last 5 days overall profits from history
 
 // Single Trailing State
 struct SingleTrail {
@@ -260,6 +277,10 @@ void RestoreStateFromPositions() {
    
    int totalPositions = 0;
    double maxLotFound = 0.0;
+   ulong lastTicket = 0;
+   datetime lastOpenTime = 0;
+   string lastComment = "";
+   int lastOrderLevel = 0;
    
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
@@ -271,15 +292,63 @@ void RestoreStateFromPositions() {
       
       double lots = PositionGetDouble(POSITION_VOLUME);
       if(lots > maxLotFound) maxLotFound = lots;
+      
+      // Track last (most recent) order by open time
+      datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
+      if(openTime > lastOpenTime) {
+         lastOpenTime = openTime;
+         lastTicket = ticket;
+         lastComment = PositionGetString(POSITION_COMMENT);
+      }
    }
    
    // Restore max lot sizes if we found positions
    if(totalPositions > 0 && maxLotFound > 0) {
       g_maxLotsCycle = maxLotFound;
-      g_overallMaxLotSize = maxLotFound;
+      // Only update overall max if found lot is greater (never decrease)
+      if(maxLotFound > g_overallMaxLotSize) g_overallMaxLotSize = maxLotFound;
+   }
+   
+   // Parse last order comment to restore state
+   // Format: E{lastCloseEquity}BP{bookedProfit}{B/S}{level}
+   // Example: E2123BP24B42
+   if(lastComment != "" && lastTicket > 0) {
+      // Extract last close equity (E value)
+      int ePos = StringFind(lastComment, "E");
+      int bpPos = StringFind(lastComment, "BP");
       
-      Log(1, StringFormat("State Restored: Found %d positions | Max Lot: %.2f", 
-          totalPositions, maxLotFound));
+      if(ePos >= 0 && bpPos > ePos) {
+         string equityStr = StringSubstr(lastComment, ePos + 1, bpPos - ePos - 1);
+         double parsedEquity = StringToDouble(equityStr);
+         
+         if(parsedEquity > 0) {
+            g_lastCloseEquity = parsedEquity;
+            Log(1, StringFormat("Restored lastCloseEquity from comment: %.2f", g_lastCloseEquity));
+         }
+      }
+      
+      // Extract grid level from comment (after B or S)
+      int bPos = StringFind(lastComment, "B", bpPos);
+      int sPos = StringFind(lastComment, "S", bpPos);
+      int levelPos = (bPos > bpPos) ? bPos : sPos;
+      
+      if(levelPos > bpPos) {
+         string levelStr = StringSubstr(lastComment, levelPos + 1);
+         lastOrderLevel = (int)StringToInteger(levelStr);
+         
+         // Calculate current grid level based on current price
+         double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         int currentLevel = PriceLevelIndex(currentPrice, g_adaptiveGap);
+         
+         Log(1, StringFormat("Last order level: %d | Current price level: %d | Level difference: %d", 
+             lastOrderLevel, currentLevel, currentLevel - lastOrderLevel));
+      }
+      
+      Log(1, StringFormat("State Restored: Found %d positions | Max Lot: %.2f | Overall Max: %.2f | Comment: %s", 
+          totalPositions, maxLotFound, g_overallMaxLotSize, lastComment));
+   } else if(totalPositions > 0) {
+      Log(1, StringFormat("State Restored: Found %d positions | Max Lot: %.2f | Overall Max: %.2f", 
+          totalPositions, maxLotFound, g_overallMaxLotSize));
    }
    
    // UpdatePositionStats will be called in OnTick to populate buy/sell counts and lots
@@ -299,6 +368,73 @@ double LevelPrice(int level, double gap) {
 
 double SafeDiv(double a, double b) {
    return (b == 0.0) ? 0.0 : (a / b);
+}
+
+//============================= HISTORY DAILY PROFIT CALCULATION ====//
+void CalculateHistoryDailyProfits() {
+   // Initialize arrays
+   ArrayInitialize(g_historySymbolDaily, 0.0);
+   ArrayInitialize(g_historyOverallDaily, 0.0);
+   
+   // Get current date
+   MqlDateTime dtNow;
+   TimeCurrent(dtNow);
+   datetime today = StringToTime(StringFormat("%04d.%02d.%02d 00:00:00", dtNow.year, dtNow.mon, dtNow.day));
+   
+   // Calculate timestamps for last 5 days (from today)
+   datetime dayStarts[5];
+   for(int i = 0; i < 5; i++) {
+      dayStarts[i] = today - (i * 86400); // 86400 = seconds in a day
+   }
+   
+   // Request history for the last 5 days
+   datetime historyStart = dayStarts[4]; // 4 days ago
+   datetime historyEnd = TimeCurrent();
+   
+   if(!HistorySelect(historyStart, historyEnd)) {
+      Log(2, "Failed to load history");
+      return;
+   }
+   
+   int totalDeals = HistoryDealsTotal();
+   
+   // Process each deal
+   for(int i = 0; i < totalDeals; i++) {
+      ulong dealTicket = HistoryDealGetTicket(i);
+      if(dealTicket == 0) continue;
+      
+      // Only count OUT deals (closing positions)
+      long dealEntry = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+      if(dealEntry != DEAL_ENTRY_OUT) continue;
+      
+      long dealMagic = HistoryDealGetInteger(dealTicket, DEAL_MAGIC);
+      string dealSymbol = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
+      double dealProfit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
+      datetime dealTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
+      
+      // Determine which day this deal belongs to
+      MqlDateTime dtDeal;
+      TimeToStruct(dealTime, dtDeal);
+      datetime dealDay = StringToTime(StringFormat("%04d.%02d.%02d 00:00:00", dtDeal.year, dtDeal.mon, dtDeal.day));
+      
+      // Add to appropriate day index
+      for(int d = 0; d < 5; d++) {
+         if(dealDay == dayStarts[d]) {
+            // Add to overall daily profit (ALL deals regardless of magic or symbol)
+            g_historyOverallDaily[d] += dealProfit;
+            
+            // Add to symbol-specific daily profit if it matches our magic AND symbol
+            if(dealMagic == Magic && dealSymbol == _Symbol) {
+               g_historySymbolDaily[d] += dealProfit;
+            }
+            break;
+         }
+      }
+   }
+   
+   Log(3, StringFormat("History Daily Profits - Symbol: %.2f,%.2f,%.2f,%.2f,%.2f | Overall: %.2f,%.2f,%.2f,%.2f,%.2f",
+       g_historySymbolDaily[0], g_historySymbolDaily[1], g_historySymbolDaily[2], g_historySymbolDaily[3], g_historySymbolDaily[4],
+       g_historyOverallDaily[0], g_historyOverallDaily[1], g_historyOverallDaily[2], g_historyOverallDaily[3], g_historyOverallDaily[4]));
 }
 
 //============================= SINGLE THRESHOLD CALCULATION ========//
@@ -371,6 +507,9 @@ void UpdatePositionStats() {
    g_buyProfit = 0.0;
    g_sellProfit = 0.0;
    
+   // Track max lot size directly from order traversal
+   double currentMaxLot = 0.0;
+   
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
       if(!PositionSelectByTicket(ticket)) continue;
@@ -383,6 +522,9 @@ void UpdatePositionStats() {
       
       g_totalProfit += profit;
       
+      // Track max lot size in current cycle
+      if(lots > currentMaxLot) currentMaxLot = lots;
+      
       if(type == POSITION_TYPE_BUY) {
          g_buyCount++;
          g_buyLots += lots;
@@ -394,21 +536,19 @@ void UpdatePositionStats() {
       }
    }
    
-   g_netLots = g_buyLots - g_sellLots;
+   // Update cycle max lot size (use >= to ensure first value is captured)
+   if(currentMaxLot > g_maxLotsCycle) g_maxLotsCycle = currentMaxLot;
    
-   // Track max single lot size in cycle and overall
-   double maxSingleLot = 0.0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--) {
-      ulong ticket = PositionGetTicket(i);
-      if(!PositionSelectByTicket(ticket)) continue;
-      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-      if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
-      
-      double lots = PositionGetDouble(POSITION_VOLUME);
-      if(lots > maxSingleLot) maxSingleLot = lots;
+   // Update overall max lot size (never decreases, use >= to ensure first value is captured)
+   if(currentMaxLot > g_overallMaxLotSize) g_overallMaxLotSize = currentMaxLot;
+   
+   // Debug logging for max lot tracking
+   if(currentMaxLot > 0 && DebugLevel >= 3) {
+      Log(3, StringFormat("MaxLot tracking: current=%.2f | cycle=%.2f | overall=%.2f", 
+          currentMaxLot, g_maxLotsCycle, g_overallMaxLotSize));
    }
-   if(maxSingleLot > g_maxLotsCycle) g_maxLotsCycle = maxSingleLot;
-   if(maxSingleLot > g_overallMaxLotSize) g_overallMaxLotSize = maxSingleLot;
+   
+   g_netLots = g_buyLots - g_sellLots;
 
    // Profit views: overall P/L since start, cycle profit (booked+open), open vs booked breakdown
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
@@ -419,14 +559,48 @@ void UpdatePositionStats() {
    double openProfit = g_totalProfit;                       // current open P/L
    double bookedCycle = cycleProfit - openProfit;           // booked in this cycle
    
-   // Track overall max profit/loss (update every tick, never reset)
+   // Track overall max profit (update every tick, never reset)
    if(overallProfit > g_overallMaxProfit) g_overallMaxProfit = overallProfit;
-   if(overallProfit < 0 && MathAbs(overallProfit) > g_overallMaxLoss) g_overallMaxLoss = MathAbs(overallProfit);
    
-   // Track cycle max loss (resets on close-all)
+   // Track cycle max profit/loss (resets on close-all)
+   if(cycleProfit > g_maxProfitCycle) g_maxProfitCycle = cycleProfit;
    if(cycleProfit < 0) {
       double absLoss = MathAbs(cycleProfit);
-      if(absLoss > g_maxLossCycle) g_maxLossCycle = absLoss;
+      if(absLoss > g_maxLossCycle) {
+         double prevMaxLoss = g_maxLossCycle;
+         g_maxLossCycle = absLoss;
+         
+         // Create vline when max loss increases and exceeds threshold
+         if(absLoss >= MaxLossVlineThreshold && absLoss > g_lastMaxLossVline) {
+            datetime nowTime = TimeCurrent();
+            string vlineName = StringFormat("MaxLoss_%.0f_E%.0f", absLoss, equity);
+            
+            // Delete old if exists
+            ObjectDelete(0, vlineName);
+            
+            // Create vertical line
+            double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            if(ObjectCreate(0, vlineName, OBJ_VLINE, 0, nowTime, currentPrice)) {
+               // Color: red if this is >= overall max loss, pink otherwise
+               color lineColor = (absLoss >= g_overallMaxLoss) ? clrRed : clrDeepPink;
+               ObjectSetInteger(0, vlineName, OBJPROP_COLOR, lineColor);
+               ObjectSetInteger(0, vlineName, OBJPROP_WIDTH, 1);
+               ObjectSetInteger(0, vlineName, OBJPROP_STYLE, STYLE_DOT);
+               ObjectSetInteger(0, vlineName, OBJPROP_BACK, true);
+               ObjectSetInteger(0, vlineName, OBJPROP_SELECTABLE, false);
+               
+               string vlineText = StringFormat("MaxLoss: %.2f | Overall: %.2f", absLoss, g_overallMaxLoss);
+               ObjectSetString(0, vlineName, OBJPROP_TEXT, vlineText);
+               
+               Log(2, StringFormat("MaxLoss VLine: %.2f (color: %s) | Overall: %.2f", 
+                   absLoss, (absLoss >= g_overallMaxLoss) ? "RED" : "PINK", g_overallMaxLoss));
+            }
+            
+            g_lastMaxLossVline = absLoss;
+         }
+      }
+      // Track overall max loss ever touched in any cycle (never resets)
+      if(absLoss > g_overallMaxLoss) g_overallMaxLoss = absLoss;
    }
    
    // Track max spread
@@ -472,8 +646,8 @@ void CalculateLots_MaxOrders_Switch() {
       g_nextSellLot = 2 * g_nextBuyLot + (MathAbs(g_netLots) / 2);
    }
    
-   // Switch mode after 10 orders
-   if(maxOrders >= 10 && MathAbs(g_netLots) > 0.01) {
+   // Switch mode after threshold orders
+   if(maxOrders >= SwitchModeCount && MathAbs(g_netLots) > 0.01) {
       double temp = g_nextSellLot;
       g_nextSellLot = g_nextBuyLot;
       g_nextBuyLot = temp;
@@ -495,8 +669,8 @@ void CalculateLots_OrderDiff_Switch() {
       g_nextSellLot = 2 * g_nextBuyLot + (MathAbs(g_netLots) / 2);
    }
    
-   // Switch mode after 10 order difference
-   if(orderDiff >= 10 && MathAbs(g_netLots) > 0.01) {
+   // Switch mode after threshold order difference
+   if(orderDiff >= SwitchModeCount && MathAbs(g_netLots) > 0.01) {
       double temp = g_nextSellLot;
       g_nextSellLot = g_nextBuyLot;
       g_nextBuyLot = temp;
@@ -512,13 +686,76 @@ void CalculateLots_Hedge_SameSize() {
    g_nextBuyLot = BaseLotSize * (maxOrders + 1);
    
    // Keep same size in both directions (no balancing)
-   // Switch triggered after 10 orders, but maintain equal sizing
-   if(maxOrders >= 10 && MathAbs(g_netLots) > 0.01) {
+   // Switch triggered after threshold orders, but maintain equal sizing
+   if(maxOrders >= SwitchModeCount && MathAbs(g_netLots) > 0.01) {
       // Still apply base lot calculation, but keep them equal
       double baseLot = BaseLotSize * (maxOrders + 1);
       g_nextSellLot = baseLot;
       g_nextBuyLot = baseLot;
    }
+}
+
+// Method 4: Fixed Levels Mode Switch
+void CalculateLots_Fixed_Levels() {
+   int maxOrders = MathMax(g_buyCount, g_sellCount);
+   
+   // Progressive sizing based on max orders
+   g_nextSellLot = BaseLotSize * (maxOrders + 1);
+   g_nextBuyLot = BaseLotSize * (maxOrders + 1);
+   
+   // Balance exposure
+   if(g_netLots > 0.01) {
+      g_nextBuyLot = 2 * g_nextSellLot + (g_netLots / 2);
+   } else if(g_netLots < -0.01) {
+      g_nextSellLot = 2 * g_nextBuyLot + (MathAbs(g_netLots) / 2);
+   }
+   
+   // Determine which iteration we're in based on origin price and current price
+   double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   int currentLevel = PriceLevelIndex(currentPrice, g_adaptiveGap);
+   
+   // Calculate which zone we're in: each zone spans SwitchModeCount levels
+   // Zone 0: levels -5 to 5 (if SwitchModeCount=5)
+   // Zone 1: levels 5 to 10 or -5 to -10
+   // Zone 2: levels 10 to 15 or -10 to -15, etc.
+   int zone = (int)(MathAbs(currentLevel) / SwitchModeCount);
+   
+   // Switch mode on odd zones (zone 1, 3, 5, etc.)
+   bool shouldSwitch = (zone % 2 == 1);
+   
+   if(shouldSwitch && MathAbs(g_netLots) > 0.01) {
+      double temp = g_nextSellLot;
+      g_nextSellLot = g_nextBuyLot;
+      g_nextBuyLot = temp;
+   }
+}
+
+// Method 5: GLO Based (Global Loss Orders Based)
+void CalculateLots_GLOBased() {
+   // Count orders currently in loss
+   g_orders_in_loss = 0;
+   
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
+      
+      double profit = PositionGetDouble(POSITION_PROFIT);
+      if(profit < 0) {
+         g_orders_in_loss++;
+      }
+   }
+   
+   // Calculate lot size: BaseLotSize + (BaseLotSize * orders_in_loss)
+   // Both buy and sell lots will be the same
+   double calculatedLot = BaseLotSize + (BaseLotSize * g_orders_in_loss);
+   
+   g_nextBuyLot = calculatedLot;
+   g_nextSellLot = calculatedLot;
+   
+   Log(3, StringFormat("GLO Method: Orders in loss=%d | Next lot=%.2f", 
+       g_orders_in_loss, calculatedLot));
 }
 
 void NormalizeLots() {
@@ -551,9 +788,28 @@ void CalculateNextLots() {
          CalculateLots_Hedge_SameSize();
          break;
       
-      default:
-         CalculateLots_MaxOrders_Switch();
+      case LOT_METHOD_FIXED_LEVELS:
+         CalculateLots_Fixed_Levels();
          break;
+      
+      case LOT_METHOD_GLO_BASED:
+         CalculateLots_GLOBased();
+         break;
+      
+      default:
+         CalculateLots_GLOBased();
+         break;
+   }
+   
+   // Override with base lot size if trail is active and mode requires it
+   if(g_trailActive && (TrailOrderMode == TRAIL_ORDERS_BASESIZE || 
+                         TrailOrderMode == TRAIL_ORDERS_PROFIT_DIR || 
+                         TrailOrderMode == TRAIL_ORDERS_REVERSE_DIR)) {
+      g_nextBuyLot = BaseLotSize;
+      g_nextSellLot = BaseLotSize;
+      string modeDesc = (TrailOrderMode == TRAIL_ORDERS_BASESIZE) ? "base size" : 
+                        (TrailOrderMode == TRAIL_ORDERS_PROFIT_DIR) ? "profit direction" : "reverse direction";
+      Log(3, StringFormat("Trail active: Using base lot size %.2f (mode: %s)", BaseLotSize, modeDesc));
    }
    
    // Normalize lots to broker requirements
@@ -690,9 +946,9 @@ void PlaceGridOrders() {
       return;
    }
    
-   // Block new orders during total trailing
-   if(g_trailActive) {
-      Log(3, "New orders blocked: total trailing active (closing positions)");
+   // Handle orders during total trailing based on mode
+   if(g_trailActive && TrailOrderMode == TRAIL_ORDERS_NONE) {
+      Log(3, "New orders blocked: total trailing active (mode: no orders)");
       return;
    }
    
@@ -704,9 +960,26 @@ void PlaceGridOrders() {
    if(g_prevAsk == 0.0) g_prevAsk = nowAsk;
    if(g_prevBid == 0.0) g_prevBid = nowBid;
    
+   // Determine if BUY/SELL orders are allowed during trail based on direction mode
+   bool allowBuy = true;
+   bool allowSell = true;
+   
+   if(g_trailActive) {
+      if(TrailOrderMode == TRAIL_ORDERS_PROFIT_DIR) {
+         // Profit direction: only allow orders in the direction of net exposure
+         if(g_netLots < 0) allowBuy = false;  // SELL exposed, block BUY
+         if(g_netLots > 0) allowSell = false; // BUY exposed, block SELL
+      }
+      else if(TrailOrderMode == TRAIL_ORDERS_REVERSE_DIR) {
+         // Reverse direction: only allow orders opposite to net exposure (hedging)
+         if(g_netLots > 0) allowBuy = false;  // BUY exposed, block more BUY
+         if(g_netLots < 0) allowSell = false; // SELL exposed, block more SELL
+      }
+   }
+   
    // BUY logic - price moving up
    // BUY executes at ASK, so trigger should ensure ASK crosses level + half spread
-   if(nowAsk > g_prevAsk) {
+   if(nowAsk > g_prevAsk && allowBuy) {
       int Llo = PriceLevelIndex(MathMin(g_prevAsk, nowAsk), g_adaptiveGap) - 2;
       int Lhi = PriceLevelIndex(MathMax(g_prevAsk, nowAsk), g_adaptiveGap) + 2;
       
@@ -719,8 +992,14 @@ void PlaceGridOrders() {
             if(HasOrderOnLevel(POSITION_TYPE_BUY, L, g_adaptiveGap)) continue;
             if(HasOrderNearLevel(POSITION_TYPE_BUY, L, g_adaptiveGap, 1)) continue;
             
-            string orderComment = StringFormat("BUY L%d", L);
+            double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+            double cycleProfit = equity - g_lastCloseEquity;
+            double bookedProfit = cycleProfit - g_totalProfit;
+            string orderComment = StringFormat("E%.0fBP%.0fB%d", g_lastCloseEquity, bookedProfit, L);
             if(ExecuteOrder(POSITION_TYPE_BUY, g_nextBuyLot, orderComment)) {
+               // Track max lot size (intended lot size, not split execution)
+               if(g_nextBuyLot > g_maxLotsCycle) g_maxLotsCycle = g_nextBuyLot;
+               if(g_nextBuyLot > g_overallMaxLotSize) g_overallMaxLotSize = g_nextBuyLot;
                Log(1, StringFormat("BUY %.2f @ L%d (%.5f)", g_nextBuyLot, L, nowAsk));
             }
          }
@@ -729,7 +1008,7 @@ void PlaceGridOrders() {
    
    // SELL logic - price moving down
    // SELL executes at BID, so trigger should ensure BID crosses level - half spread
-   if(nowBid < g_prevBid) {
+   if(nowBid < g_prevBid && allowSell) {
       int Llo = PriceLevelIndex(MathMin(g_prevBid, nowBid), g_adaptiveGap) - 2;
       int Lhi = PriceLevelIndex(MathMax(g_prevBid, nowBid), g_adaptiveGap) + 2;
       
@@ -742,8 +1021,14 @@ void PlaceGridOrders() {
             if(HasOrderOnLevel(POSITION_TYPE_SELL, L, g_adaptiveGap)) continue;
             if(HasOrderNearLevel(POSITION_TYPE_SELL, L, g_adaptiveGap, 1)) continue;
             
-            string orderComment = StringFormat("SELL L%d", L);
+            double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+            double cycleProfit = equity - g_lastCloseEquity;
+            double bookedProfit = cycleProfit - g_totalProfit;
+            string orderComment = StringFormat("E%.0fBP%.0fS%d", g_lastCloseEquity, bookedProfit, L);
             if(ExecuteOrder(POSITION_TYPE_SELL, g_nextSellLot, orderComment)) {
+               // Track max lot size (intended lot size, not split execution)
+               if(g_nextSellLot > g_maxLotsCycle) g_maxLotsCycle = g_nextSellLot;
+               if(g_nextSellLot > g_overallMaxLotSize) g_overallMaxLotSize = g_nextSellLot;
                Log(1, StringFormat("SELL %.2f @ L%d (%.5f)", g_nextSellLot, L, nowBid));
             }
          }
@@ -752,6 +1037,89 @@ void PlaceGridOrders() {
    
    g_prevAsk = nowAsk;
    g_prevBid = nowBid;
+}
+
+//============================= CLOSE ALL WRAPPER ==================//
+void PerformCloseAll(string reason = "Manual") {
+   // Calculate cycle stats before closing (for vline info)
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double cycleProfit = equity - g_lastCloseEquity;
+   double openProfit = g_totalProfit;
+   double bookedCycle = cycleProfit - openProfit;
+   
+   Log(1, StringFormat("CLOSE ALL (%s): profit=%.2f (open=%.2f booked=%.2f) | Positions: BUY:%d SELL:%d", 
+       reason, cycleProfit, openProfit, bookedCycle, g_buyCount, g_sellCount));
+   
+   // Close all positions
+   int closedCount = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
+      
+      if(trade.PositionClose(ticket)) {
+         closedCount++;
+      }
+   }
+   
+   Log(1, StringFormat("%d positions closed", closedCount));
+   
+   // Draw vertical line with trail & profit info at close
+   datetime nowTime = TimeCurrent();
+   string vlineName = StringFormat("%s_P%.02f_E%.0f", reason, cycleProfit, equity);
+   
+   // Delete old object if it exists
+   ObjectDelete(0, vlineName);
+   
+   // Create vertical line
+   double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   if(ObjectCreate(0, vlineName, OBJ_VLINE, 0, nowTime, currentPrice)) {
+      // Set color based on profit: yellow for -1 to +1, green for > 1, red for < -1
+      color lineColor = (cycleProfit > 1.0) ? clrGreen : (cycleProfit < -1.0) ? clrRed : clrYellow;
+      ObjectSetInteger(0, vlineName, OBJPROP_COLOR, lineColor);
+      
+      // Set line width proportional to profit: base 1, +1 for every 5 profit, max 10
+      int lineWidth = 1 + (int)(MathAbs(cycleProfit) / 5.0);
+      lineWidth = MathMin(lineWidth, 10);
+      lineWidth = MathMax(lineWidth, 1);
+      ObjectSetInteger(0, vlineName, OBJPROP_WIDTH, lineWidth);
+      
+      ObjectSetInteger(0, vlineName, OBJPROP_STYLE, STYLE_SOLID);
+      ObjectSetInteger(0, vlineName, OBJPROP_BACK, true);
+      ObjectSetInteger(0, vlineName, OBJPROP_SELECTABLE, false);
+      string vlinetext = StringFormat("P:%.2f/%.2f/%.2f(L%.2f)ML%.2f/%.2f L%.2f/%.2f", 
+            cycleProfit, g_trailPeak - cycleProfit, g_trailPeak, bookedCycle, 
+            -g_maxLossCycle, -g_overallMaxLoss, g_maxLotsCycle, g_overallMaxLotSize);
+      ObjectSetString(0, vlineName, OBJPROP_TEXT, vlinetext);
+      ChartRedraw(0);
+      
+      Log(1, StringFormat("VLine created: %s (color: %s, width: %d) | Text: %s", 
+          vlineName, 
+          (cycleProfit > 1.0) ? "GREEN" : (cycleProfit < -1.0) ? "RED" : "YELLOW", 
+          lineWidth, vlinetext));
+   }
+   
+   // Record close profit in history (shift array and add new)
+   for(int i = 4; i > 0; i--) {
+      g_last5Closes[i] = g_last5Closes[i-1];
+   }
+   g_last5Closes[0] = cycleProfit;
+   g_closeCount++;
+   
+   // Reset cycle parameters
+   g_lastCloseEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+   g_maxLossCycle = 0.0;
+   g_maxProfitCycle = 0.0;
+   g_maxLotsCycle = 0.0;
+   g_lastMaxLossVline = 0.0;
+   g_trailActive = false;
+   g_trailStart = 0.0;
+   g_trailGap = 0.0;
+   g_trailPeak = 0.0;
+   g_trailFloor = 0.0;
+   
+   Log(1, StringFormat("Cycle RESET: new equity=%.2f | Close count=%d", g_lastCloseEquity, g_closeCount));
 }
 
 //============================= TOTAL PROFIT TRAIL =================//
@@ -765,7 +1133,7 @@ void TrailTotalProfit() {
    int totalPos = g_buyCount + g_sellCount;
    if(totalPos < 3) {
       if(g_trailActive) {
-         Log(2, "Trail deactivated: insufficient positions");
+         Log(2, "Total Trail deactivated: insufficient positions");
          g_trailActive = false;
       }
       return;
@@ -773,11 +1141,6 @@ void TrailTotalProfit() {
    
    double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
    double cycleProfit = currentEquity - g_lastCloseEquity;
-   
-   // Track cycle max profit
-   if(cycleProfit > 0) {
-      if(cycleProfit > g_maxProfitCycle) g_maxProfitCycle = cycleProfit;
-   }
    
    // Calculate trail start level
    double lossStart = g_maxLossCycle * TrailStartPct;
@@ -789,7 +1152,7 @@ void TrailTotalProfit() {
    }
    
    // Debug: show trail decision values
-   Log(3, StringFormat("Trail DEBUG: cycleProfit=%.2f | MaxLoss=%.2f(start=%.2f) MaxProfit=%.2f(start=%.2f) | trailStart=%.2f | active=%d", 
+   Log(3, StringFormat("Total Trail DEBUG: cycleProfit=%.2f | MaxLoss=%.2f(start=%.2f) MaxProfit=%.2f(start=%.2f) | trailStart=%.2f | active=%d", 
        cycleProfit, -g_maxLossCycle, -lossStart, g_maxProfitCycle, profitStart, g_trailStart, g_trailActive ? 1 : 0));
    
    // Start trailing: should activate when cycle profit > (max profit already reached - some buffer)
@@ -800,14 +1163,14 @@ void TrailTotalProfit() {
    
    if(!g_trailActive && cycleProfit > g_trailStart && g_trailStart > 0) {
       if(!hasSignificantExposure) {
-         Log(2, StringFormat("Trail BLOCKED: Net lots %.2f < minimum %.2f (too balanced)", MathAbs(g_netLots), minNetLots));
+         Log(2, StringFormat("Total Trail BLOCKED: Net lots %.2f < minimum %.2f (too balanced)", MathAbs(g_netLots), minNetLots));
       } else {
          g_trailActive = true;
          g_trailPeak = cycleProfit;
          g_trailFloor = g_trailPeak - g_trailGap;
          double lossStart = g_maxLossCycle * TrailStartPct;
          double profitStart = g_maxProfitCycle * 1.0;
-         Log(1, StringFormat("Trail START: profit=%.2f start=%.2f gap=%.2f floor=%.2f | NetLots=%.2f | MaxLoss=%.2f LossStart=%.2f MaxProfit=%.2f ProfitStart=%.2f", 
+         Log(1, StringFormat("Total Trail START: profit=%.2f start=%.2f gap=%.2f floor=%.2f | NetLots=%.2f | MaxLoss=%.2f LossStart=%.2f MaxProfit=%.2f ProfitStart=%.2f", 
              cycleProfit, g_trailStart, g_trailGap, g_trailFloor, MathAbs(g_netLots), g_maxLossCycle, lossStart, g_maxProfitCycle, profitStart));
       }
    }
@@ -817,79 +1180,16 @@ void TrailTotalProfit() {
       if(cycleProfit > g_trailPeak) {
          g_trailPeak = cycleProfit;
          g_trailFloor = g_trailPeak - g_trailGap;
-         Log(2, StringFormat("Trail UPDATE: peak=%.2f floor=%.2f", g_trailPeak, g_trailFloor));
+         Log(2, StringFormat("Total Trail UPDATE: peak=%.2f floor=%.2f", g_trailPeak, g_trailFloor));
       }
       
       // Check for close trigger
       if(cycleProfit <= g_trailFloor) {
-         Log(1, StringFormat("Trail CLOSE ALL: profit=%.2f <= floor=%.2f | Peak=%.2f Gap=%.2f | BUY:%d SELL:%d", 
-             cycleProfit, g_trailFloor, g_trailPeak, g_trailGap, g_buyCount, g_sellCount));
+         Log(1, StringFormat("Trail CLOSE trigger: profit=%.2f <= floor=%.2f | Peak=%.2f Gap=%.2f", 
+             cycleProfit, g_trailFloor, g_trailPeak, g_trailGap));
          
-         // Calculate cycle stats before closing (for vline info)
-         double openProfit = g_totalProfit;
-         double bookedCycle = cycleProfit - openProfit;
-         
-         // Close all positions
-         for(int i = PositionsTotal() - 1; i >= 0; i--) {
-            ulong ticket = PositionGetTicket(i);
-            if(!PositionSelectByTicket(ticket)) continue;
-            if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-            if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
-            
-            trade.PositionClose(ticket);
-         }
-         // Draw vertical line with trail & profit info at close
-         datetime nowTime = TimeCurrent();
-         string vlineName = StringFormat("TrailClose_P%.02f_E%.0f", cycleProfit, AccountInfoDouble(ACCOUNT_EQUITY));
-         
-         // Delete old object if it exists
-         ObjectDelete(0, vlineName);
-         
-         // Create vertical line with price parameter
-         double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-         if(ObjectCreate(0, vlineName, OBJ_VLINE, 0, nowTime, currentPrice)) {
-            // Set color based on profit: green if positive, red if negative
-            color lineColor = (cycleProfit >= 0) ? clrGreen : clrRed;
-            ObjectSetInteger(0, vlineName, OBJPROP_COLOR, lineColor);
-            
-            // Set line width proportional to profit: base 1, +1 for every 500 profit, max 10
-            int lineWidth = 1 + (int)(MathAbs(cycleProfit) / 5.0);
-            lineWidth = MathMin(lineWidth, 10);
-            lineWidth = MathMax(lineWidth, 1);
-            ObjectSetInteger(0, vlineName, OBJPROP_WIDTH, lineWidth);
-            
-            ObjectSetInteger(0, vlineName, OBJPROP_STYLE, STYLE_SOLID);
-            string vlinetext = StringFormat("P:%.2f/%.2f/%.2f(L%.2f)ML%.2f/%.2f L%.2f/%.2f", 
-                  cycleProfit,g_trailPeak - cycleProfit,g_trailPeak,bookedCycle, -g_maxLossCycle, -g_overallMaxLoss, g_maxLotsCycle, g_overallMaxLotSize);
-            ObjectSetString(0, vlineName, OBJPROP_TEXT, vlinetext);
-            ChartRedraw(0);
-            Log(1, StringFormat("VLine created: %s (color: %s, width: %d) | ML:%.2f Book:%.2f Lot:%.2f", vlineName, (cycleProfit >= 0) ? "GREEN" : "RED", lineWidth, -g_maxLossCycle, bookedCycle, g_maxLotsCycle));
-            Log(1, StringFormat("VLine Text: %s", vlinetext));
-         }
-
-
-         // Record close profit in history (shift array and add new)
-         for(int i = 4; i > 0; i--) {
-            g_last5Closes[i] = g_last5Closes[i-1];
-         }
-         g_last5Closes[0] = cycleProfit;
-         g_closeCount++;
-         
-         // Reset cycle parameters
-         g_lastCloseEquity = AccountInfoDouble(ACCOUNT_EQUITY);
-         g_maxLossCycle = 0.0;
-         g_maxProfitCycle = 0.0;
-         g_maxLotsCycle = 0.0;
-         g_trailActive = false;
-         g_trailStart = 0.0;
-         g_trailGap = 0.0;
-         g_trailPeak = 0.0;
-         g_trailFloor = 0.0;
-         // If you add more cycle stats, reset them here as well
-         
-         
-         
-         Log(1, StringFormat("Cycle RESET: new equity=%.2f", g_lastCloseEquity));
+         // Call wrapper function to handle all close-all activities
+         PerformCloseAll("TrailClose");
       }
    }
 }
@@ -956,7 +1256,7 @@ void TrailSinglePositions() {
          AddTrail(ticket, profitPer01, effectiveThreshold);
          idx = FindTrailIndex(ticket);
          double gapValue = effectiveThreshold / 2.0;
-         Log(2, StringFormat("Trail START #%I64u PPL=%.2f | Threshold=%.2f Gap=%.2f ActivateAt=%.2f", 
+         Log(2, StringFormat("Single Trail START #%I64u PPL=%.2f | Threshold=%.2f Gap=%.2f ActivateAt=%.2f", 
              ticket, profitPer01, effectiveThreshold, gapValue, effectiveThreshold / 2.0));
       }
       
@@ -971,7 +1271,7 @@ void TrailSinglePositions() {
          if(!active && profitPer01 > 0 && profitPer01 > peak) {
             g_trails[idx].peakPPL = profitPer01;
             peak = profitPer01;
-            Log(2, StringFormat("Trail PEAK TRACK #%I64u peak=%.2f | AwaitingActivation", ticket, peak));
+            Log(3, StringFormat("single Trail PEAK TRACK #%I64u peak=%.2f | AwaitingActivation", ticket, peak));
          }
          
          // Activate when drops to half threshold OR when peak reaches 2x threshold
@@ -984,7 +1284,7 @@ void TrailSinglePositions() {
             g_trails[idx].activePeak = peak;  // Set peak at activation point (use tracked peak, not current)
             active = true;
             activePeak = peak;
-            Log(1, StringFormat("Trail ACTIVE #%I64u peak=%.2f | Current=%.2f | Ready to Trail", 
+            Log(1, StringFormat("Single Trail ACTIVE #%I64u peak=%.2f | Current=%.2f | Ready to Trail", 
                 ticket, activePeak, profitPer01));
          }
          
@@ -992,14 +1292,14 @@ void TrailSinglePositions() {
          if(active && profitPer01 > activePeak) {
             g_trails[idx].activePeak = profitPer01;
             activePeak = profitPer01;
-            Log(2, StringFormat("Trail PEAK UPDATE #%I64u peak=%.2f", ticket, activePeak));
+            Log(2, StringFormat("Single Trail PEAK UPDATE #%I64u peak=%.2f", ticket, activePeak));
          }
          
          // Show continuous trail status when active (throttle to avoid spam - every 500ms)
          if(active) {
             double trailFloorValue = activePeak - gap;
             if(currentTick - g_trails[idx].lastLogTick >= 500) {  // Log every 500ms
-               Log(3, StringFormat("Trail STATUS #%I64u | Peak=%.2f Current=%.2f Floor=%.2f Drop=%.2f", 
+               Log(3, StringFormat("Single Trail STATUS #%I64u | Peak=%.2f Current=%.2f Floor=%.2f Drop=%.2f", 
                    ticket, activePeak, profitPer01, trailFloorValue, activePeak - profitPer01));
                g_trails[idx].lastLogTick = currentTick;
             }
@@ -1012,7 +1312,7 @@ void TrailSinglePositions() {
                double posProfit = PositionGetDouble(POSITION_PROFIT);
                double drop = activePeak - profitPer01;
                
-               Log(1, StringFormat("Trail CLOSE #%I64u %s %.2f lots | Profit=%.2f | Trail Stats: Peak=%.2f Current=%.2f Drop=%.2f TrailMin=%.2f", 
+               Log(1, StringFormat("Single Trail CLOSE #%I64u %s %.2f lots | Profit=%.2f | Trail Stats: Peak=%.2f Current=%.2f Drop=%.2f TrailMin=%.2f", 
                    ticket, posType, posLots, posProfit, activePeak, profitPer01, drop, trailFloorValue));
                
                if(trade.PositionClose(ticket)) {
@@ -1026,7 +1326,7 @@ void TrailSinglePositions() {
    // Cleanup stale trails (positions that no longer exist)
    for(int j = ArraySize(g_trails) - 1; j >= 0; j--) {
       if(!PositionSelectByTicket(g_trails[j].ticket)) {
-         Log(2, StringFormat("Trail CLEANUP #%I64u (position closed)", g_trails[j].ticket));
+         Log(2, StringFormat("Single Trail CLEANUP #%I64u (position closed)", g_trails[j].ticket));
          RemoveTrail(j);
       }
    }
@@ -1067,20 +1367,8 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          
          // Check if this is a double-click (within 2 seconds of first click)
          if(g_closeAllClickTime > 0 && (currentTime - g_closeAllClickTime) <= 2) {
-            // Double-click confirmed - close all positions
-            int closedCount = 0;
-            for(int i = PositionsTotal() - 1; i >= 0; i--) {
-               ulong ticket = PositionGetTicket(i);
-               if(!PositionSelectByTicket(ticket)) continue;
-               if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-               if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
-               
-               if(trade.PositionClose(ticket)) {
-                  closedCount++;
-               }
-            }
-            
-            Log(1, StringFormat("CLOSE ALL executed: %d positions closed", closedCount));
+            // Double-click confirmed - call wrapper function to handle all close-all activities
+            PerformCloseAll("ButtonClick");
             g_closeAllClickTime = 0; // Reset click timer
          } else {
             // First click - start timer
@@ -1099,7 +1387,8 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
             ObjectDelete(0, "PositionDetailsLabel");
             ObjectDelete(0, "SpreadEquityLabel");
             ObjectDelete(0, "Last5ClosesLabel");
-            ObjectDelete(0, "Last5DaysLabel");
+            ObjectDelete(0, "Last5DaysSymbolLabel");
+            ObjectDelete(0, "Last5DaysOverallLabel");
             ObjectDelete(0, "CenterProfitLabel");
             ObjectDelete(0, "CurrentProfitVLine");
          }
@@ -1138,9 +1427,14 @@ int OnInit() {
    // Initialize history arrays
    ArrayInitialize(g_last5Closes, 0.0);
    ArrayInitialize(g_dailyProfits, 0.0);
+   ArrayInitialize(g_historySymbolDaily, 0.0);
+   ArrayInitialize(g_historyOverallDaily, 0.0);
    g_closeCount = 0;
    g_lastDay = -1;
    g_dayIndex = 0;
+   
+   // Calculate history-based daily profits
+   CalculateHistoryDailyProfits();
    
    // Restore state from existing positions (if any)
    RestoreStateFromPositions();
@@ -1199,6 +1493,9 @@ void OnTick() {
       // Update tracking variables for new day
       g_lastDay = dt.day;
       g_lastDayEquity = equity;
+      
+      // Recalculate history-based daily profits
+      CalculateHistoryDailyProfits();
    }
    
    // Update current profit vline (follows current time with stats)
@@ -1251,7 +1548,7 @@ void UpdateCurrentProfitVline() {
       double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       if(ObjectCreate(0, vlineName, OBJ_VLINE, 0, nowTime+120, currentPrice)) {
          // Color based on profit
-         color lineColor = (cycleProfit >= 0) ? clrGreen : clrRed;
+            color lineColor = (cycleProfit > 1.0) ? clrGreen : (cycleProfit < -1.0) ? clrRed : clrYellow;
          ObjectSetInteger(0, vlineName, OBJPROP_COLOR, lineColor);
          
          // Width proportional to profit
@@ -1261,6 +1558,8 @@ void UpdateCurrentProfitVline() {
          ObjectSetInteger(0, vlineName, OBJPROP_WIDTH, lineWidth);
          
          ObjectSetInteger(0, vlineName, OBJPROP_STYLE, STYLE_SOLID);
+         ObjectSetInteger(0, vlineName, OBJPROP_BACK, true);
+         ObjectSetInteger(0, vlineName, OBJPROP_SELECTABLE, false);
          int totalCount = g_buyCount + g_sellCount;
          double totalLots = g_buyLots + g_sellLots;
          string vlinetext = StringFormat("P:%.2f/%.2f/%.2f(L%.2f)ML%.2f/%.2f L%.2f/%.2f N:%d/%.2f/%.2f", 
@@ -1274,11 +1573,11 @@ void UpdateCurrentProfitVline() {
    }
    
    // Label 1: Current Profit Label (always show)
-   color lineColor = (cycleProfit >= 0) ? clrGreen : clrRed;
+   color lineColor = (cycleProfit > 1.0) ? clrGreen : (cycleProfit < -1.0) ? clrRed : clrYellow;
    string modeIndicator = "";
    if(g_noWork) modeIndicator = " [NO WORK]";
    else if(g_stopNewOrders) modeIndicator = " [MANAGE ONLY]";
-   string vlinetext = StringFormat("P:%.2f/%.2f/%.2f(L%.2f)ML%.2f/%.2f L%.2f/%.2f%s", 
+   string vlinetext = StringFormat("P:%.0f/%.0f/%.0f(E%.0f)ML%.0f/%.0f L%.2f/%.2f%s", 
          cycleProfit, g_trailPeak - cycleProfit, g_trailPeak, bookedCycle, -g_maxLossCycle, -g_overallMaxLoss, 
          g_maxLotsCycle, g_overallMaxLotSize, modeIndicator);
    UpdateOrCreateLabel("CurrentProfitLabel", 10, 30, vlinetext, lineColor, 12, "Arial Bold");
@@ -1286,17 +1585,20 @@ void UpdateCurrentProfitVline() {
    // Label 2: Position Details (always show)
    int totalCount = g_buyCount + g_sellCount;
    double totalLots = g_buyLots + g_sellLots;
-   string label2text = StringFormat("N:%d/%.2f/%.2f B:%d/%.2f/%.2f S:%d/%.2f/%.2f",
+   string label2text = StringFormat("N:%d/%.2f/%.0f B:%d/%.2f/%.0f S:%d/%.2f/%.0f NB%.2f/NS%.2f",
          totalCount, g_netLots, totalLots,
          g_buyCount, g_buyLots, g_buyProfit,
-         g_sellCount, g_sellLots, g_sellProfit);
+         g_sellCount, g_sellLots, g_sellProfit,
+         g_nextBuyLot, g_nextSellLot);
    color label2Color = (g_totalProfit >= 0) ? clrLime : clrOrange;
    UpdateOrCreateLabel("PositionDetailsLabel", 10, 50, label2text, label2Color, 10, "Arial Bold");
    
    // Label 3: Spread & Equity (always show)
    double currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * _Point;
-   string label3text = StringFormat("Spread:%.1f/%.1f | Equity:%.2f | Overall:%.2f", 
-         currentSpread/_Point, g_maxSpread/_Point, equity, overallProfit);
+   double inputGapPoints = GapInPoints;
+   double effectiveGapPoints = g_adaptiveGap / _Point;
+   string label3text = StringFormat("Spread:%.1f/%.1f | Gap:%.0f/%.0f | Equity:%.2f | Overall:%.2f", 
+         currentSpread/_Point, g_maxSpread/_Point, inputGapPoints, effectiveGapPoints, equity, overallProfit);
    color label3Color = (overallProfit >= 0) ? clrGreen : clrRed;
    UpdateOrCreateLabel("SpreadEquityLabel", 10, 70, label3text, label3Color, 10, "Arial Bold");
    
@@ -1312,21 +1614,23 @@ void UpdateCurrentProfitVline() {
    }
    UpdateOrCreateLabel("Last5ClosesLabel", 10, 90, label4text, clrYellow, 9, "Arial");
    
-   // Label 5: Last 5 Days (always show)
-   double currentDayProfit = equity - g_lastDayEquity;
-   string label5text = "Last5 Days: ";
-   label5text += StringFormat("%.2f", currentDayProfit);  // Current day
-   for(int i = 0; i < 4; i++) {
-      label5text += " | ";
-      if(g_lastDay != -1) {
-         label5text += StringFormat("%.2f", g_dailyProfits[i]);
-      } else {
-         label5text += "-";
-      }
+   // Label 5: Last 5 Days Symbol-Specific (from history)
+   string label5text = "Last5D Symbol: ";
+   for(int i = 0; i < 5; i++) {
+      label5text += StringFormat("%.2f", g_historySymbolDaily[i]);
+      if(i < 4) label5text += " | ";
    }
-   UpdateOrCreateLabel("Last5DaysLabel", 10, 108, label5text, clrCyan, 9, "Arial");
+   UpdateOrCreateLabel("Last5DaysSymbolLabel", 10, 108, label5text, clrCyan, 9, "Arial");
    
-   // Label 6: Center Label - Overall Profit & Net Lots
+   // Label 6: Last 5 Days Overall (from history)
+   string label6text = "Last5D Overall: ";
+   for(int i = 0; i < 5; i++) {
+      label6text += StringFormat("%.2f", g_historyOverallDaily[i]);
+      if(i < 4) label6text += " | ";
+   }
+   UpdateOrCreateLabel("Last5DaysOverallLabel", 10, 126, label6text, clrYellow, 9, "Arial");
+   
+   // Label 7: Center Label - Overall Profit & Net Lots
    long chartWidth = ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
    long chartHeight = ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
    int centerX = (int)(chartWidth / 2);
@@ -1418,17 +1722,18 @@ void OnDeinit(const int reason) {
       if(i < 4) stats4 += " | ";
    }
    
-   // Label 5: Last 5 Days (including current day)
-   double currentDayProfit = equity - g_lastDayEquity;  // Profit made today
-   string stats5 = "Last5 Days: ";
-   stats5 += StringFormat("%.2f", currentDayProfit);  // Current day profit
-   for(int i = 0; i < 4; i++) {
-      stats5 += " | ";
-      if(g_lastDay != -1) {
-         stats5 += StringFormat("%.2f", g_dailyProfits[i]);
-      } else {
-         stats5 += "-";
-      }
+   // Label 5: Last 5 Days Symbol-Specific (from history)
+   string stats5 = "Last5D Symbol: ";
+   for(int i = 0; i < 5; i++) {
+      stats5 += StringFormat("%.2f", g_historySymbolDaily[i]);
+      if(i < 4) stats5 += " | ";
+   }
+   
+   // Label 6: Last 5 Days Overall (from history)
+   string stats6 = "Last5D Overall: ";
+   for(int i = 0; i < 5; i++) {
+      stats6 += StringFormat("%.2f", g_historyOverallDaily[i]);
+      if(i < 4) stats6 += " | ";
    }
    
    // Print all stats
@@ -1438,5 +1743,6 @@ void OnDeinit(const int reason) {
    Print(stats3);
    Print(stats4);
    Print(stats5);
+   Print(stats6);
    Print("======================================");
 }
