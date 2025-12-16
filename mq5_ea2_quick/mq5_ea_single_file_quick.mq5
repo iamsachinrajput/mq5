@@ -142,6 +142,15 @@ SingleTrail g_trails[];
 static double g_prevAsk = 0.0;
 static double g_prevBid = 0.0;
 
+// Order placement tracking (prevent duplicates during execution)
+struct LastOrderInfo {
+   int level;
+   int type;
+   datetime time;
+};
+LastOrderInfo g_lastBuyOrder = {0, -1, 0};
+LastOrderInfo g_lastSellOrder = {0, -1, 0};
+
 //============================= UTILITY FUNCTIONS ==================//
 void Log(int level, string msg) {
    if(level <= DebugLevel) Print("[Log", level, "] ", msg);
@@ -857,22 +866,53 @@ bool ExecuteOrder(int orderType, double lotSize, string comment = "") {
       return false;
    }
    
+   // Extract level from comment if available (format: "E...BP...B14" or "E...BP...S-15")
+   int orderLevel = 0;
+   if(StringLen(comment) > 0) {
+      int pos = StringFind(comment, orderType == POSITION_TYPE_BUY ? "B" : "S", 0);
+      if(pos >= 0 && pos < StringLen(comment) - 1) {
+         string levelStr = StringSubstr(comment, pos + 1);
+         orderLevel = (int)StringToInteger(levelStr);
+      }
+   }
+   
    double maxLotPerOrder = 20.0;
    int ordersNeeded = (int)MathCeil(lotSize / maxLotPerOrder);
    
    if(ordersNeeded == 1) {
       // Single order - execute directly
       trade.SetExpertMagicNumber(Magic);
+      bool result = false;
       if(orderType == POSITION_TYPE_BUY) {
-         return trade.Buy(lotSize, _Symbol, 0, 0, 0, comment);
+         result = trade.Buy(lotSize, _Symbol, 0, 0, 0, comment);
       } else {
-         return trade.Sell(lotSize, _Symbol, 0, 0, 0, comment);
+         result = trade.Sell(lotSize, _Symbol, 0, 0, 0, comment);
       }
+      
+      // Record successful order placement
+      if(result && orderLevel != 0) {
+         datetime currentTime = TimeCurrent();
+         string typeStr = (orderType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+         if(orderType == POSITION_TYPE_BUY) {
+            g_lastBuyOrder.level = orderLevel;
+            g_lastBuyOrder.type = orderType;
+            g_lastBuyOrder.time = currentTime;
+         } else {
+            g_lastSellOrder.level = orderLevel;
+            g_lastSellOrder.type = orderType;
+            g_lastSellOrder.time = currentTime;
+         }
+         Log(2, StringFormat("[ORDER-RECORDED] %s L%d @ %s | Lot=%.2f", 
+             typeStr, orderLevel, TimeToString(currentTime, TIME_SECONDS), lotSize));
+      }
+      
+      return result;
    }
    
    // Multiple orders needed - split the lot size
    double remainingLots = lotSize;
    int successCount = 0;
+   bool firstOrderPlaced = false;
    
    Log(2, StringFormat("ExecuteOrder: Splitting %.2f lots into %d orders (max %.2f per order)",
        lotSize, ordersNeeded, maxLotPerOrder));
@@ -908,6 +948,24 @@ bool ExecuteOrder(int orderType, double lotSize, string comment = "") {
          remainingLots -= currentLot;
          Log(2, StringFormat("ExecuteOrder: Order %d/%d placed: %.2f lots (%.2f remaining)",
              i + 1, ordersNeeded, currentLot, remainingLots));
+         
+         // Record first split order to prevent duplicates
+         if(!firstOrderPlaced && orderLevel != 0) {
+            datetime currentTime = TimeCurrent();
+            string typeStr = (orderType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+            if(orderType == POSITION_TYPE_BUY) {
+               g_lastBuyOrder.level = orderLevel;
+               g_lastBuyOrder.type = orderType;
+               g_lastBuyOrder.time = currentTime;
+            } else {
+               g_lastSellOrder.level = orderLevel;
+               g_lastSellOrder.type = orderType;
+               g_lastSellOrder.time = currentTime;
+            }
+            Log(2, StringFormat("[ORDER-RECORDED-SPLIT] %s L%d @ %s | Lot=%.2f (split %d/%d)", 
+                typeStr, orderLevel, TimeToString(currentTime, TIME_SECONDS), currentLot, i+1, ordersNeeded));
+            firstOrderPlaced = true;
+         }
       } else {
          Log(1, StringFormat("ExecuteOrder: Failed to place order %d/%d: %.2f lots",
              i + 1, ordersNeeded, currentLot));
@@ -940,6 +998,67 @@ bool HasOrderOnLevel(int orderType, int level, double gap) {
          return true;
       }
    }
+   return false;
+}
+
+// Check for orders of same type within a small price distance (prevents duplicates)
+bool HasOrderAtPrice(int orderType, int level, double gap) {
+   string typeStr = (orderType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+   datetime currentTime = TimeCurrent();
+   double levelPrice = LevelPrice(level, gap);
+   double tolerance = gap * 0.45; // Nearly half gap distance for safety
+   
+   Log(3, StringFormat("[DUP-CHECK] %s L%d | LevelPrice=%.5f Tolerance=%.5f Gap=%.5f", 
+       typeStr, level, levelPrice, tolerance, gap));
+   
+   // Check if we just placed an order at this level (within last 15 seconds)
+   if(orderType == POSITION_TYPE_BUY) {
+      if(g_lastBuyOrder.level == level && g_lastBuyOrder.type == orderType) {
+         int timeDiff = (int)(currentTime - g_lastBuyOrder.time);
+         if(timeDiff <= 15) {
+            Log(2, StringFormat("[DUP-BLOCKED-TIME] %s L%d | Last order %d seconds ago", 
+                typeStr, level, timeDiff));
+            return true; // Block - we just placed order here
+         }
+      }
+   } else {
+      if(g_lastSellOrder.level == level && g_lastSellOrder.type == orderType) {
+         int timeDiff = (int)(currentTime - g_lastSellOrder.time);
+         if(timeDiff <= 15) {
+            Log(2, StringFormat("[DUP-BLOCKED-TIME] %s L%d | Last order %d seconds ago", 
+                typeStr, level, timeDiff));
+            return true; // Block - we just placed order here
+         }
+      }
+   }
+   
+   // Also check existing positions
+   int positionsChecked = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
+      
+      int type = (int)PositionGetInteger(POSITION_TYPE);
+      if(type != orderType) continue;
+      
+      positionsChecked++;
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double priceDistance = MathAbs(openPrice - levelPrice);
+      
+      Log(3, StringFormat("[DUP-CHECK] Position #%I64u %s @ %.5f | Distance=%.5f Tolerance=%.5f", 
+          ticket, typeStr, openPrice, priceDistance, tolerance));
+      
+      if(priceDistance < tolerance) {
+         Log(2, StringFormat("[DUP-BLOCKED-PRICE] %s L%d | Found position #%I64u @ %.5f (distance=%.5f < tolerance=%.5f)", 
+             typeStr, level, ticket, openPrice, priceDistance, tolerance));
+         return true;
+      }
+   }
+   
+   Log(3, StringFormat("[DUP-CHECK] %s L%d | Checked %d positions - ALLOW ORDER", 
+       typeStr, level, positionsChecked));
    return false;
 }
 
@@ -1023,8 +1142,19 @@ void PlaceGridOrders() {
          // BUY trigger: level price + half spread (so ASK crosses the level accounting for spread)
          double trigger = LevelPrice(L, g_adaptiveGap) + (spread / 2.0);
          if(g_prevAsk <= trigger && nowAsk > trigger) {
-            if(HasOrderOnLevel(POSITION_TYPE_BUY, L, g_adaptiveGap)) continue;
+            Log(2, StringFormat("[PLACE-CHECK] BUY L%d triggered | Trigger=%.5f PrevAsk=%.5f NowAsk=%.5f", 
+                L, trigger, g_prevAsk, nowAsk));
             
+            if(HasOrderOnLevel(POSITION_TYPE_BUY, L, g_adaptiveGap)) {
+               Log(2, StringFormat("[PLACE-BLOCKED-LEVEL] BUY L%d | HasOrderOnLevel returned true", L));
+               continue;
+            }
+            if(HasOrderAtPrice(POSITION_TYPE_BUY, L, g_adaptiveGap)) {
+               Log(2, StringFormat("[PLACE-BLOCKED-PRICE] BUY L%d | HasOrderAtPrice returned true", L));
+               continue;
+            }
+            
+            Log(2, StringFormat("[PLACE-EXECUTE] BUY L%d | Checks passed, placing order...", L));
             double equity = AccountInfoDouble(ACCOUNT_EQUITY);
             double cycleProfit = equity - g_lastCloseEquity;
             double bookedProfit = cycleProfit - g_totalProfit;
@@ -1051,8 +1181,19 @@ void PlaceGridOrders() {
          // SELL trigger: level price - half spread (so BID crosses the level accounting for spread)
          double trigger = LevelPrice(L, g_adaptiveGap) - (spread / 2.0);
          if(g_prevBid >= trigger && nowBid < trigger) {
-            if(HasOrderOnLevel(POSITION_TYPE_SELL, L, g_adaptiveGap)) continue;
+            Log(2, StringFormat("[PLACE-CHECK] SELL L%d triggered | Trigger=%.5f PrevBid=%.5f NowBid=%.5f", 
+                L, trigger, g_prevBid, nowBid));
             
+            if(HasOrderOnLevel(POSITION_TYPE_SELL, L, g_adaptiveGap)) {
+               Log(2, StringFormat("[PLACE-BLOCKED-LEVEL] SELL L%d | HasOrderOnLevel returned true", L));
+               continue;
+            }
+            if(HasOrderAtPrice(POSITION_TYPE_SELL, L, g_adaptiveGap)) {
+               Log(2, StringFormat("[PLACE-BLOCKED-PRICE] SELL L%d | HasOrderAtPrice returned true", L));
+               continue;
+            }
+            
+            Log(2, StringFormat("[PLACE-EXECUTE] SELL L%d | Checks passed, placing order...", L));
             double equity = AccountInfoDouble(ACCOUNT_EQUITY);
             double cycleProfit = equity - g_lastCloseEquity;
             double bookedProfit = cycleProfit - g_totalProfit;
