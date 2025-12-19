@@ -45,8 +45,27 @@ enum ENUM_TRAIL_ORDER_MODE {
 };
 input ENUM_TRAIL_ORDER_MODE TrailOrderMode = TRAIL_ORDERS_PROFIT_DIR;  // Order behavior during total trailing
 
+enum ENUM_ORDER_STRATEGY {
+   ORDER_STRATEGY_NONE = 0,                // No additional checks
+   ORDER_STRATEGY_BOUNDARY_DIRECTIONAL = 1, // BUY needs SELL below, SELL needs BUY above
+   ORDER_STRATEGY_ADJACENT_ONLY = 2        // BUY needs SELL at L-1, SELL needs BUY at L+1
+};
+input ENUM_ORDER_STRATEGY OrderPlacementStrategy = ORDER_STRATEGY_BOUNDARY_DIRECTIONAL; // Order placement strategy
+
+enum ENUM_ORDER_PLACEMENT_TYPE {
+   ORDER_PLACEMENT_NORMAL = 0,    // Normal - only place orders when price crosses
+   ORDER_PLACEMENT_FLEXIBLE = 1   // Flexible - also fill missed adjacent level orders
+};
+input ENUM_ORDER_PLACEMENT_TYPE OrderPlacementType = ORDER_PLACEMENT_NORMAL; // Order placement type
+
  bool   EnableSingleTrailing = true; // Enable single position trailing
  input double SingleProfitThreshold = -1; // Profit per 0.01 lot to start trail (negative = auto-calc from gap)
+
+enum ENUM_SINGLE_TRAIL_METHOD {
+   SINGLE_TRAIL_NORMAL = 0,       // Normal - trail each order independently
+   SINGLE_TRAIL_CLOSETOGETHER = 1 // Close Together - trail farthest loss orders with profitable orders
+};
+input ENUM_SINGLE_TRAIL_METHOD SingleTrailMethod = SINGLE_TRAIL_NORMAL; // Single trail closing method
 
 // Adaptive Gap
 input bool   UseAdaptiveGap = true;       // Use ATR-based adaptive gap
@@ -137,6 +156,18 @@ struct SingleTrail {
    int    lastLogTick;   // Track last log tick to avoid spam
 };
 SingleTrail g_trails[];
+
+// Group trailing state (for SINGLE_TRAIL_CLOSETOGETHER mode)
+struct GroupTrailState {
+   bool active;
+   double peakProfit;
+   double threshold;
+   double gap;
+   ulong farthestBuyTicket;
+   ulong farthestSellTicket;
+   int lastLogTick;
+};
+GroupTrailState g_groupTrail = {false, 0.0, 0.0, 0.0, 0, 0, 0};
 
 // Price tracking
 static double g_prevAsk = 0.0;
@@ -1062,6 +1093,69 @@ bool HasOrderAtPrice(int orderType, int level, double gap) {
    return false;
 }
 
+// Check if order exists at a specific level by parsing comment field
+// More reliable than price-based checks when there's market delay
+// Comment format: "E...BP...B6" (BUY level 6) or "E...BP...S-3" (SELL level -3)
+bool HasOrderAtLevelByComment(int orderType, int level) {
+   string searchPattern = (orderType == POSITION_TYPE_BUY) ? "B" : "S";
+   string levelStr = IntegerToString(level);
+   
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
+      
+      int type = (int)PositionGetInteger(POSITION_TYPE);
+      if(type != orderType) continue;
+      
+      string comment = PositionGetString(POSITION_COMMENT);
+      
+      // Find the position of B or S in the comment
+      int bPos = StringFind(comment, "B", 0);
+      int sPos = StringFind(comment, "S", 0);
+      int levelPos = -1;
+      
+      // Determine which marker to use based on order type
+      if(orderType == POSITION_TYPE_BUY && bPos >= 0) {
+         // For BUY, find the last 'B' in comment (after BP)
+         int lastBPos = bPos;
+         int searchPos = bPos + 1;
+         while(searchPos < StringLen(comment)) {
+            int nextB = StringFind(comment, "B", searchPos);
+            if(nextB < 0) break;
+            lastBPos = nextB;
+            searchPos = nextB + 1;
+         }
+         levelPos = lastBPos;
+      } else if(orderType == POSITION_TYPE_SELL && sPos >= 0) {
+         // For SELL, find the last 'S' in comment
+         int lastSPos = sPos;
+         int searchPos = sPos + 1;
+         while(searchPos < StringLen(comment)) {
+            int nextS = StringFind(comment, "S", searchPos);
+            if(nextS < 0) break;
+            lastSPos = nextS;
+            searchPos = nextS + 1;
+         }
+         levelPos = lastSPos;
+      }
+      
+      if(levelPos >= 0 && levelPos < StringLen(comment) - 1) {
+         string extractedLevel = StringSubstr(comment, levelPos + 1);
+         int commentLevel = (int)StringToInteger(extractedLevel);
+         
+         if(commentLevel == level) {
+            Log(3, StringFormat("[COMMENT-CHECK] Found %s order at L%d via comment: %s",
+                searchPattern, level, comment));
+            return true;
+         }
+      }
+   }
+   
+   return false;
+}
+
 bool HasOrderNearLevel(int orderType, int level, double gap, int window) {
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
@@ -1079,6 +1173,249 @@ bool HasOrderNearLevel(int orderType, int level, double gap, int window) {
       if(distance <= window) return true;
    }
    return false;
+}
+
+// Check if order placement is allowed based on strategy
+// Returns true if order can be placed, false if blocked by strategy
+bool IsOrderPlacementAllowed(int orderType, int level, double gap) {
+   // If no strategy, always allow
+   if(OrderPlacementStrategy == ORDER_STRATEGY_NONE) {
+      return true;
+   }
+   
+   // If no open positions, always allow first order
+   if(PositionsTotal() == 0) {
+      Log(3, "[STRATEGY] No positions - allowing first order");
+      return true;
+   }
+   
+   // Boundary Check Directional Strategy:
+   // BUY at level L (even) - needs SELL order below it (any odd level < L)
+   // SELL at level L (odd) - needs BUY order above it (any even level > L)
+   if(OrderPlacementStrategy == ORDER_STRATEGY_BOUNDARY_DIRECTIONAL) {
+      string typeStr = (orderType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+      
+      bool hasOpposingOrder = false;
+      int opposingCount = 0;
+      
+      for(int i = PositionsTotal() - 1; i >= 0; i--) {
+         ulong ticket = PositionGetTicket(i);
+         if(!PositionSelectByTicket(ticket)) continue;
+         if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+         if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
+         
+         int type = (int)PositionGetInteger(POSITION_TYPE);
+         double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+         int existingLevel = PriceLevelIndex(openPrice, gap);
+         
+         if(orderType == POSITION_TYPE_BUY) {
+            // BUY order - need SELL below (SELL level < BUY level)
+            if(type == POSITION_TYPE_SELL && existingLevel < level) {
+               hasOpposingOrder = true;
+               opposingCount++;
+            }
+         } else {
+            // SELL order - need BUY above (BUY level > SELL level)
+            if(type == POSITION_TYPE_BUY && existingLevel > level) {
+               hasOpposingOrder = true;
+               opposingCount++;
+            }
+         }
+      }
+      
+      if(!hasOpposingOrder) {
+         string direction = (orderType == POSITION_TYPE_BUY) ? "below" : "above";
+         string opposingType = (orderType == POSITION_TYPE_BUY) ? "SELL" : "BUY";
+         Log(2, StringFormat("[STRATEGY-BLOCKED] %s L%d | No %s order %s - boundary check failed",
+             typeStr, level, opposingType, direction));
+         return false;
+      }
+      
+      Log(3, StringFormat("[STRATEGY-PASSED] %s L%d | Found %d opposing orders - boundary check passed",
+          typeStr, level, opposingCount));
+      return true;
+   }
+   
+   // Adjacent Only Strategy:
+   // BUY at even level L - needs SELL order at adjacent level L-1 (odd, below)
+   // SELL at odd level L - needs BUY order at adjacent level L+1 (even, above)
+   // Exception: Top BUY or Bottom SELL can always be placed
+   if(OrderPlacementStrategy == ORDER_STRATEGY_ADJACENT_ONLY) {
+      string typeStr = (orderType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+      
+      // First, check if this is a boundary order (topmost BUY or bottommost SELL)
+      bool isTopBuy = false;
+      bool isBottomSell = false;
+      
+      if(orderType == POSITION_TYPE_BUY) {
+         // Check if there are any BUY orders above this level
+         isTopBuy = true;
+         for(int i = PositionsTotal() - 1; i >= 0; i--) {
+            ulong ticket = PositionGetTicket(i);
+            if(!PositionSelectByTicket(ticket)) continue;
+            if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+            if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
+            
+            int type = (int)PositionGetInteger(POSITION_TYPE);
+            if(type != POSITION_TYPE_BUY) continue;
+            
+            double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+            int existingLevel = PriceLevelIndex(openPrice, gap);
+            
+            if(existingLevel > level) {
+               isTopBuy = false;
+               break;
+            }
+         }
+         
+         if(isTopBuy) {
+            Log(3, StringFormat("[STRATEGY-PASSED] %s L%d | Top BUY - no adjacent check needed",
+                typeStr, level));
+            return true;
+         }
+      } else {
+         // Check if there are any SELL orders below this level
+         isBottomSell = true;
+         for(int i = PositionsTotal() - 1; i >= 0; i--) {
+            ulong ticket = PositionGetTicket(i);
+            if(!PositionSelectByTicket(ticket)) continue;
+            if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+            if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
+            
+            int type = (int)PositionGetInteger(POSITION_TYPE);
+            if(type != POSITION_TYPE_SELL) continue;
+            
+            double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+            int existingLevel = PriceLevelIndex(openPrice, gap);
+            
+            if(existingLevel < level) {
+               isBottomSell = false;
+               break;
+            }
+         }
+         
+         if(isBottomSell) {
+            Log(3, StringFormat("[STRATEGY-PASSED] %s L%d | Bottom SELL - no adjacent check needed",
+                typeStr, level));
+            return true;
+         }
+      }
+      
+      // Not a boundary order, so check for adjacent opposing order
+      int requiredLevel;
+      int requiredType;
+      
+      if(orderType == POSITION_TYPE_BUY) {
+         // BUY at even level L needs SELL at odd level L-1
+         requiredLevel = level - 1;
+         requiredType = POSITION_TYPE_SELL;
+      } else {
+         // SELL at odd level L needs BUY at even level L+1
+         requiredLevel = level + 1;
+         requiredType = POSITION_TYPE_BUY;
+      }
+      
+      // Check if required adjacent order exists
+      bool hasAdjacentOrder = false;
+      
+      for(int i = PositionsTotal() - 1; i >= 0; i--) {
+         ulong ticket = PositionGetTicket(i);
+         if(!PositionSelectByTicket(ticket)) continue;
+         if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+         if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
+         
+         int type = (int)PositionGetInteger(POSITION_TYPE);
+         if(type != requiredType) continue;
+         
+         double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+         int existingLevel = PriceLevelIndex(openPrice, gap);
+         
+         if(existingLevel == requiredLevel) {
+            hasAdjacentOrder = true;
+            Log(3, StringFormat("[STRATEGY-PASSED] %s L%d | Found adjacent %s at L%d",
+                typeStr, level, (requiredType == POSITION_TYPE_BUY) ? "BUY" : "SELL", requiredLevel));
+            break;
+         }
+      }
+      
+      if(!hasAdjacentOrder) {
+         string requiredTypeStr = (requiredType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+         Log(2, StringFormat("[STRATEGY-BLOCKED] %s L%d | No adjacent %s order at L%d",
+             typeStr, level, requiredTypeStr, requiredLevel));
+         return false;
+      }
+      
+      return true;
+   }
+   
+   // Default: allow
+   return true;
+}
+
+//============================= MISSED ORDER PLACEMENT =============//
+// Check for missed orders at adjacent levels and create them
+// Only runs when OrderPlacementType = ORDER_PLACEMENT_FLEXIBLE
+void PlaceMissedAdjacentOrders() {
+   double nowAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double nowBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   
+   // Get current price levels
+   int currentAskLevel = PriceLevelIndex(nowAsk, g_adaptiveGap);
+   int currentBidLevel = PriceLevelIndex(nowBid, g_adaptiveGap);
+   
+   // Check adjacent SELL level (one level above current ask - should be odd)
+   int adjacentSellLevel = currentAskLevel + 1;
+   if(!IsOdd(adjacentSellLevel)) adjacentSellLevel++; // Make sure it's odd
+   
+   // Check if SELL order exists at adjacent level - use comment check first (most reliable)
+   if(!HasOrderAtLevelByComment(POSITION_TYPE_SELL, adjacentSellLevel) &&
+      !HasOrderOnLevel(POSITION_TYPE_SELL, adjacentSellLevel, g_adaptiveGap) &&
+      !HasOrderAtPrice(POSITION_TYPE_SELL, adjacentSellLevel, g_adaptiveGap)) {
+      
+      // Check if we should place this order based on strategy
+      if(IsOrderPlacementAllowed(POSITION_TYPE_SELL, adjacentSellLevel, g_adaptiveGap)) {
+         Log(1, StringFormat("[DELAYED-ORDER] Creating missed SELL order at adjacent level L%d", adjacentSellLevel));
+         
+         double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+         double cycleProfit = equity - g_lastCloseEquity;
+         double bookedProfit = cycleProfit - g_totalProfit;
+         string orderComment = StringFormat("E%.0fBP%.0fS%d", g_lastCloseEquity, bookedProfit, adjacentSellLevel);
+         
+         if(ExecuteOrder(POSITION_TYPE_SELL, g_nextSellLot, orderComment)) {
+            if(g_nextSellLot > g_maxLotsCycle) g_maxLotsCycle = g_nextSellLot;
+            if(g_nextSellLot > g_overallMaxLotSize) g_overallMaxLotSize = g_nextSellLot;
+            Log(1, StringFormat("[DELAYED-ORDER] SELL %.2f @ L%d (%.5f) - missed order filled", 
+                g_nextSellLot, adjacentSellLevel, nowBid));
+         }
+      }
+   }
+   
+   // Check adjacent BUY level (one level below current bid - should be even)
+   int adjacentBuyLevel = currentBidLevel - 1;
+   if(!IsEven(adjacentBuyLevel)) adjacentBuyLevel--; // Make sure it's even
+   
+   // Check if BUY order exists at adjacent level - use comment check first (most reliable)
+   if(!HasOrderAtLevelByComment(POSITION_TYPE_BUY, adjacentBuyLevel) &&
+      !HasOrderOnLevel(POSITION_TYPE_BUY, adjacentBuyLevel, g_adaptiveGap) &&
+      !HasOrderAtPrice(POSITION_TYPE_BUY, adjacentBuyLevel, g_adaptiveGap)) {
+      
+      // Check if we should place this order based on strategy
+      if(IsOrderPlacementAllowed(POSITION_TYPE_BUY, adjacentBuyLevel, g_adaptiveGap)) {
+         Log(1, StringFormat("[DELAYED-ORDER] Creating missed BUY order at adjacent level L%d", adjacentBuyLevel));
+         
+         double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+         double cycleProfit = equity - g_lastCloseEquity;
+         double bookedProfit = cycleProfit - g_totalProfit;
+         string orderComment = StringFormat("E%.0fBP%.0fB%d", g_lastCloseEquity, bookedProfit, adjacentBuyLevel);
+         
+         if(ExecuteOrder(POSITION_TYPE_BUY, g_nextBuyLot, orderComment)) {
+            if(g_nextBuyLot > g_maxLotsCycle) g_maxLotsCycle = g_nextBuyLot;
+            if(g_nextBuyLot > g_overallMaxLotSize) g_overallMaxLotSize = g_nextBuyLot;
+            Log(1, StringFormat("[DELAYED-ORDER] BUY %.2f @ L%d (%.5f) - missed order filled", 
+                g_nextBuyLot, adjacentBuyLevel, nowAsk));
+         }
+      }
+   }
 }
 
 //============================= ORDER PLACEMENT ====================//
@@ -1103,6 +1440,11 @@ void PlaceGridOrders() {
    if(g_trailActive && TrailOrderMode == TRAIL_ORDERS_NONE) {
       Log(3, "New orders blocked: total trailing active (mode: no orders)");
       return;
+   }
+   
+   // Check for missed adjacent orders if flexible placement is enabled
+   if(OrderPlacementType == ORDER_PLACEMENT_FLEXIBLE) {
+      PlaceMissedAdjacentOrders();
    }
    
    double nowAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -1153,6 +1495,9 @@ void PlaceGridOrders() {
                Log(2, StringFormat("[PLACE-BLOCKED-PRICE] BUY L%d | HasOrderAtPrice returned true", L));
                continue;
             }
+            if(!IsOrderPlacementAllowed(POSITION_TYPE_BUY, L, g_adaptiveGap)) {
+               continue;
+            }
             
             Log(2, StringFormat("[PLACE-EXECUTE] BUY L%d | Checks passed, placing order...", L));
             double equity = AccountInfoDouble(ACCOUNT_EQUITY);
@@ -1190,6 +1535,9 @@ void PlaceGridOrders() {
             }
             if(HasOrderAtPrice(POSITION_TYPE_SELL, L, g_adaptiveGap)) {
                Log(2, StringFormat("[PLACE-BLOCKED-PRICE] SELL L%d | HasOrderAtPrice returned true", L));
+               continue;
+            }
+            if(!IsOrderPlacementAllowed(POSITION_TYPE_SELL, L, g_adaptiveGap)) {
                continue;
             }
             
@@ -1530,8 +1878,264 @@ void RemoveTrail(int index) {
    ArrayResize(g_trails, size - 1);
 }
 
+//============================= GROUP TRAILING (CLOSE TOGETHER) ====//
+// Trail combined profit of farthest losing orders + farthest profitable orders
+void UpdateGroupTrailing() {
+   if(!EnableSingleTrailing) return;
+   if(g_trailActive) return; // Skip when total trailing active
+   if(g_noWork) return;
+   
+   // Find farthest losing orders (one BUY, one SELL if available)
+   ulong farthestBuyTicket = 0;
+   ulong farthestSellTicket = 0;
+   double maxBuyLoss = 0.0;
+   double maxSellLoss = 0.0;
+   
+   // Track ALL profitable orders to find the farthest ones
+   struct ProfitableOrder {
+      ulong ticket;
+      double profit;
+      int type;
+      double lots;
+   };
+   ProfitableOrder profitableOrders[];
+   int profitableCount = 0;
+   
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
+      
+      int type = (int)PositionGetInteger(POSITION_TYPE);
+      double profit = PositionGetDouble(POSITION_PROFIT);
+      double lots = PositionGetDouble(POSITION_VOLUME);
+      
+      if(profit < 0) {
+         // Track farthest losing orders
+         double absLoss = MathAbs(profit);
+         if(type == POSITION_TYPE_BUY && absLoss > maxBuyLoss) {
+            maxBuyLoss = absLoss;
+            farthestBuyTicket = ticket;
+         } else if(type == POSITION_TYPE_SELL && absLoss > maxSellLoss) {
+            maxSellLoss = absLoss;
+            farthestSellTicket = ticket;
+         }
+      } else if(profit > 0) {
+         // Store all profitable orders
+         ArrayResize(profitableOrders, profitableCount + 1);
+         profitableOrders[profitableCount].ticket = ticket;
+         profitableOrders[profitableCount].profit = profit;
+         profitableOrders[profitableCount].type = type;
+         profitableOrders[profitableCount].lots = lots;
+         profitableCount++;
+      }
+   }
+   
+   // Need at least one losing order and some profitable orders to trail
+   if((farthestBuyTicket == 0 && farthestSellTicket == 0) || profitableCount == 0) {
+      g_groupTrail.active = false;
+      return;
+   }
+   
+   // Calculate total loss from farthest orders
+   double totalLoss = 0.0;
+   double farthestBuyLoss = 0.0;
+   double farthestSellLoss = 0.0;
+   
+   if(farthestBuyTicket > 0) {
+      if(PositionSelectByTicket(farthestBuyTicket)) {
+         farthestBuyLoss = PositionGetDouble(POSITION_PROFIT);
+         totalLoss += farthestBuyLoss;
+      }
+   }
+   
+   if(farthestSellTicket > 0) {
+      if(PositionSelectByTicket(farthestSellTicket)) {
+         farthestSellLoss = PositionGetDouble(POSITION_PROFIT);
+         totalLoss += farthestSellLoss;
+      }
+   }
+   
+   // Sort profitable orders by profit (highest first) to select farthest in profit
+   for(int i = 0; i < profitableCount - 1; i++) {
+      for(int j = i + 1; j < profitableCount; j++) {
+         if(profitableOrders[j].profit > profitableOrders[i].profit) {
+            ProfitableOrder temp = profitableOrders[i];
+            profitableOrders[i] = profitableOrders[j];
+            profitableOrders[j] = temp;
+         }
+      }
+   }
+   
+   // Select only enough farthest profitable orders to cover losses and make group profitable
+   double selectedProfit = 0.0;
+   int selectedCount = 0;
+   ulong selectedTickets[];
+   
+   for(int i = 0; i < profitableCount; i++) {
+      selectedProfit += profitableOrders[i].profit;
+      ArrayResize(selectedTickets, selectedCount + 1);
+      selectedTickets[selectedCount] = profitableOrders[i].ticket;
+      selectedCount++;
+      
+      // Stop when we have enough profit to cover losses with some margin
+      if(selectedProfit + totalLoss > 0) {
+         break;
+      }
+   }
+   
+   // Calculate combined profit (selected profitable orders + farthest losing orders)
+   double combinedProfit = selectedProfit + totalLoss;
+   int groupCount = selectedCount + (farthestBuyTicket > 0 ? 1 : 0) + (farthestSellTicket > 0 ? 1 : 0);
+   
+   // Calculate threshold and gap if not active
+   if(!g_groupTrail.active) {
+      double threshold = CalculateSingleThreshold();
+      g_groupTrail.threshold = threshold;
+      g_groupTrail.gap = threshold * 0.50; // 50% gap like single trailing
+      g_groupTrail.peakProfit = 0.0;
+      g_groupTrail.farthestBuyTicket = farthestBuyTicket;
+      g_groupTrail.farthestSellTicket = farthestSellTicket;
+   }
+   
+   // Update peak
+   if(combinedProfit > g_groupTrail.peakProfit) {
+      g_groupTrail.peakProfit = combinedProfit;
+   }
+   
+   // Check if group should start trailing
+   if(!g_groupTrail.active && combinedProfit >= g_groupTrail.threshold) {
+      g_groupTrail.active = true;
+      Log(1, StringFormat("GT ACTIVE | Combined=%.2f Peak=%.2f | Loss: BUY=#%I64u(%.2f) SELL=#%I64u(%.2f) | Selected %d profitable orders (%.2f profit)",
+          combinedProfit, g_groupTrail.peakProfit, farthestBuyTicket, farthestBuyLoss, farthestSellTicket, farthestSellLoss, selectedCount, selectedProfit));
+   }
+   
+   // Trail logic
+   if(g_groupTrail.active) {
+      double dropFromPeak = g_groupTrail.peakProfit - combinedProfit;
+      
+      // Periodic logging (every 10 ticks)
+      if((int)GetTickCount() - g_groupTrail.lastLogTick > 10) {
+         Log(2, StringFormat("GT | Combined=%.2f Peak=%.2f Drop=%.2f Gap=%.2f | Group: %d orders (%d profitable, %d loss)",
+             combinedProfit, g_groupTrail.peakProfit, dropFromPeak, g_groupTrail.gap, groupCount, selectedCount, 
+             (farthestBuyTicket > 0 ? 1 : 0) + (farthestSellTicket > 0 ? 1 : 0)));
+         g_groupTrail.lastLogTick = (int)GetTickCount();
+      }
+      
+      // Close group if profit drops below trail gap
+      if(dropFromPeak >= g_groupTrail.gap) {
+         Log(1, StringFormat("GT CLOSE | Combined=%.2f Peak=%.2f Drop=%.2f >= Gap=%.2f",
+             combinedProfit, g_groupTrail.peakProfit, dropFromPeak, g_groupTrail.gap));
+         
+         int closedCount = 0;
+         double closedProfit = 0.0;
+         
+         // Close the farthest losing orders
+         if(farthestBuyTicket > 0) {
+            if(PositionSelectByTicket(farthestBuyTicket)) {
+               double lots = PositionGetDouble(POSITION_VOLUME);
+               double profit = PositionGetDouble(POSITION_PROFIT);
+               if(trade.PositionClose(farthestBuyTicket)) {
+                  closedCount++;
+                  closedProfit += profit;
+                  Log(1, StringFormat("GT CLOSE #%I64u BUY %.2f lots | Loss=%.2f",
+                      farthestBuyTicket, lots, profit));
+               }
+            }
+         }
+         
+         if(farthestSellTicket > 0) {
+            if(PositionSelectByTicket(farthestSellTicket)) {
+               double lots = PositionGetDouble(POSITION_VOLUME);
+               double profit = PositionGetDouble(POSITION_PROFIT);
+               if(trade.PositionClose(farthestSellTicket)) {
+                  closedCount++;
+                  closedProfit += profit;
+                  Log(1, StringFormat("GT CLOSE #%I64u SELL %.2f lots | Loss=%.2f",
+                      farthestSellTicket, lots, profit));
+               }
+            }
+         }
+         
+         // Close selected profitable orders (farthest in profit)
+         for(int i = 0; i < selectedCount; i++) {
+            if(PositionSelectByTicket(selectedTickets[i])) {
+               double lots = PositionGetDouble(POSITION_VOLUME);
+               double profit = PositionGetDouble(POSITION_PROFIT);
+               int type = (int)PositionGetInteger(POSITION_TYPE);
+               string typeStr = (type == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+               
+               if(trade.PositionClose(selectedTickets[i])) {
+                  closedCount++;
+                  closedProfit += profit;
+                  Log(1, StringFormat("GT CLOSE #%I64u %s %.2f lots | Profit=%.2f (farthest profit)",
+                      selectedTickets[i], typeStr, lots, profit));
+               }
+            }
+         }
+         
+         Log(1, StringFormat("GT CLOSED %d orders together | Net P/L: %.2f | Remaining orders continue trading",
+             closedCount, closedProfit));
+         
+         // Draw vertical line to mark group trail closure
+         datetime nowTime = TimeCurrent();
+         string vlineName = StringFormat("GT_close_%d_P%.02f", (int)nowTime, closedProfit);
+         
+         // Delete old object if it exists
+         ObjectDelete(0, vlineName);
+         
+         // Create vertical line
+         double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         if(ObjectCreate(0, vlineName, OBJ_VLINE, 0, nowTime, currentPrice)) {
+            // Set color based on profit: orange for group trails
+            color lineColor = (closedProfit > 0.0) ? clrOrange : clrRed;
+            ObjectSetInteger(0, vlineName, OBJPROP_COLOR, lineColor);
+            
+            // Set line width proportional to profit
+            int lineWidth = 1 + (int)(MathAbs(closedProfit) / 5.0);
+            lineWidth = MathMin(lineWidth, 10);
+            lineWidth = MathMax(lineWidth, 1);
+            ObjectSetInteger(0, vlineName, OBJPROP_WIDTH, lineWidth);
+            
+            ObjectSetInteger(0, vlineName, OBJPROP_STYLE, STYLE_SOLID);
+            ObjectSetInteger(0, vlineName, OBJPROP_BACK, true);
+            ObjectSetInteger(0, vlineName, OBJPROP_SELECTABLE, false);
+            
+            // Show group trail details in vline text
+            string vlinetext = StringFormat("GT: %d closed | Net P/L: %.2f | %d profit (%.2f) + %d loss (%.2f) | Peak: %.2f Drop: %.2f",
+                closedCount, closedProfit, selectedCount, selectedProfit, 
+                (farthestBuyTicket > 0 ? 1 : 0) + (farthestSellTicket > 0 ? 1 : 0), totalLoss,
+                g_groupTrail.peakProfit, dropFromPeak);
+            ObjectSetString(0, vlineName, OBJPROP_TEXT, vlinetext);
+            ChartRedraw(0);
+            
+            Log(1, StringFormat("VLine created: %s (color: %s, width: %d) | Text: %s", 
+                vlineName, 
+                (closedProfit > 0.0) ? "ORANGE" : "RED", 
+                lineWidth, vlinetext));
+         }
+         
+         // Reset group trail to recalculate with remaining positions
+         g_groupTrail.active = false;
+         g_groupTrail.peakProfit = 0.0;
+         g_groupTrail.farthestBuyTicket = 0;
+         g_groupTrail.farthestSellTicket = 0;
+      }
+   }
+}
+
+//============================= SINGLE TRAILING ===================//
 void TrailSinglePositions() {
    if(!EnableSingleTrailing) return;
+   
+   // Route to appropriate trailing method
+   if(SingleTrailMethod == SINGLE_TRAIL_CLOSETOGETHER) {
+      UpdateGroupTrailing();
+      return;
+   }
+   
+   // Normal single trailing logic below
    if(g_trailActive) return; // Skip when total trailing active
    
    // Skip closing in No Work mode
