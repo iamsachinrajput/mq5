@@ -8,9 +8,9 @@
 //============================= INPUTS =============================//
 // Core Trading Parameters
 input int    Magic = 12345;               // Magic number
-input double GapInPoints = 500;         // Gap xau100 btc1000
+input double GapInPoints = 100;         // Gap xau100 btc1000
 input double BaseLotSize = 0.01;          // Starting lot size
-input int    DebugLevel = 1;              // Debug level (0=off, 1=critical, 2=info, 3=verbose)
+input int    DebugLevel = 3;              // Debug level (0=off, 1=critical, 2=info, 3=verbose)
 
 // Lot Calculation Method
 enum ENUM_LOT_METHOD {
@@ -50,7 +50,7 @@ enum ENUM_ORDER_STRATEGY {
    ORDER_STRATEGY_BOUNDARY_DIRECTIONAL = 1, // BUY needs SELL below, SELL needs BUY above
    ORDER_STRATEGY_ADJACENT_ONLY = 2        // BUY needs SELL at L-1, SELL needs BUY at L+1
 };
-input ENUM_ORDER_STRATEGY OrderPlacementStrategy = ORDER_STRATEGY_BOUNDARY_DIRECTIONAL; // Order placement strategy
+input ENUM_ORDER_STRATEGY OrderPlacementStrategy = ORDER_STRATEGY_ADJACENT_ONLY; // Order placement strategy
 
 enum ENUM_ORDER_PLACEMENT_TYPE {
    ORDER_PLACEMENT_NORMAL = 0,    // Normal - only place orders when price crosses
@@ -63,9 +63,13 @@ input ENUM_ORDER_PLACEMENT_TYPE OrderPlacementType = ORDER_PLACEMENT_NORMAL; // 
 
 enum ENUM_SINGLE_TRAIL_METHOD {
    SINGLE_TRAIL_NORMAL = 0,       // Normal - trail each order independently
-   SINGLE_TRAIL_CLOSETOGETHER = 1 // Close Together - trail farthest loss orders with profitable orders
+   SINGLE_TRAIL_CLOSETOGETHER = 1, // Close Together - trail worst loss with profitable orders (any side)
+   SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE = 2 // Close Together Same Type - trail worst loss with profitable orders (same side only)
 };
-input ENUM_SINGLE_TRAIL_METHOD SingleTrailMethod = SINGLE_TRAIL_NORMAL; // Single trail closing method
+input ENUM_SINGLE_TRAIL_METHOD SingleTrailMethod = SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE; // Single trail closing method
+input int MinGLOForGroupTrail = 10; // Minimum GLO orders to activate group trailing
+input double MinGroupProfitToClose = 0.0; // Minimum combined profit to close group (prevents closing at loss)
+input double GroupActivationBuffer = 0.5; // Extra profit above threshold to activate (0.5 = 50% of threshold)
 
 // Adaptive Gap
 input bool   UseAdaptiveGap = true;       // Use ATR-based adaptive gap
@@ -77,6 +81,9 @@ double MaxGapPoints = GapInPoints*1.10;        // Maximum gap points
 // Display Settings
 input bool   ShowLabels = true;         // Show chart labels (disable for performance)
 input double MaxLossVlineThreshold = 100.0;  // Min loss to show max loss vline (0 = always show)
+
+// Order Placement Settings
+input int    OrderPlacementDelayMs = 0;  // Delay between orders in milliseconds (0 = no delay)
 
 // Button Positioning
 input int    BtnXDistance = 200;         // Button X distance from right edge
@@ -647,7 +654,9 @@ void UpdatePositionStats() {
          // Create vline when max loss increases and exceeds threshold
          if(absLoss >= MaxLossVlineThreshold && absLoss > g_lastMaxLossVline) {
             datetime nowTime = TimeCurrent();
-            string vlineName = StringFormat("maxloss_%.0f",  g_lastCloseEquity);
+            // Round loss to nearest thousand (e.g., 5498 -> 5k, 12800 -> 13k)
+            int lossRoundedK = (int)MathRound(absLoss / 1000.0);
+            string vlineName = StringFormat("maxloss_%.0f_%dk",  g_lastCloseEquity, lossRoundedK);
             
             // Delete old if exists
             ObjectDelete(0, vlineName);
@@ -937,6 +946,11 @@ bool ExecuteOrder(int orderType, double lotSize, string comment = "") {
              typeStr, orderLevel, TimeToString(currentTime, TIME_SECONDS), lotSize));
       }
       
+      // Apply delay if configured
+      if(result && OrderPlacementDelayMs > 0) {
+         Sleep(OrderPlacementDelayMs);
+      }
+      
       return result;
    }
    
@@ -996,6 +1010,11 @@ bool ExecuteOrder(int orderType, double lotSize, string comment = "") {
             Log(2, StringFormat("[ORDER-RECORDED-SPLIT] %s L%d @ %s | Lot=%.2f (split %d/%d)", 
                 typeStr, orderLevel, TimeToString(currentTime, TIME_SECONDS), currentLot, i+1, ordersNeeded));
             firstOrderPlaced = true;
+         }
+         
+         // Apply delay between split orders if configured
+         if(OrderPlacementDelayMs > 0) {
+            Sleep(OrderPlacementDelayMs);
          }
       } else {
          Log(1, StringFormat("ExecuteOrder: Failed to place order %d/%d: %.2f lots",
@@ -1885,13 +1904,18 @@ void UpdateGroupTrailing() {
    if(g_trailActive) return; // Skip when total trailing active
    if(g_noWork) return;
    
-   // Find farthest losing orders (one BUY, one SELL if available)
-   ulong farthestBuyTicket = 0;
-   ulong farthestSellTicket = 0;
-   double maxBuyLoss = 0.0;
-   double maxSellLoss = 0.0;
+   // Check if we have minimum GLO orders required
+   if(g_orders_in_loss < MinGLOForGroupTrail) {
+      Log(3, StringFormat("GT | Skip: Only %d GLO orders (need %d minimum)", g_orders_in_loss, MinGLOForGroupTrail));
+      return;
+   }
    
-   // Track ALL profitable orders to find the farthest ones
+   // Find single worst losing order (either BUY or SELL, whichever has more loss)
+   ulong worstLossTicket = 0;
+   double worstLoss = 0.0;
+   int worstLossType = -1;
+   
+   // Track ALL profitable orders from any side
    struct ProfitableOrder {
       ulong ticket;
       double profit;
@@ -1912,49 +1936,44 @@ void UpdateGroupTrailing() {
       double lots = PositionGetDouble(POSITION_VOLUME);
       
       if(profit < 0) {
-         // Track farthest losing orders
+         // Track single worst losing order
          double absLoss = MathAbs(profit);
-         if(type == POSITION_TYPE_BUY && absLoss > maxBuyLoss) {
-            maxBuyLoss = absLoss;
-            farthestBuyTicket = ticket;
-         } else if(type == POSITION_TYPE_SELL && absLoss > maxSellLoss) {
-            maxSellLoss = absLoss;
-            farthestSellTicket = ticket;
+         if(absLoss > worstLoss) {
+            worstLoss = absLoss;
+            worstLossTicket = ticket;
+            worstLossType = type;
          }
       } else if(profit > 0) {
-         // Store all profitable orders
-         ArrayResize(profitableOrders, profitableCount + 1);
-         profitableOrders[profitableCount].ticket = ticket;
-         profitableOrders[profitableCount].profit = profit;
-         profitableOrders[profitableCount].type = type;
-         profitableOrders[profitableCount].lots = lots;
-         profitableCount++;
+         // Store profitable orders based on mode
+         // CLOSETOGETHER: any side, CLOSETOGETHER_SAMETYPE: same type only
+         bool shouldInclude = (SingleTrailMethod == SINGLE_TRAIL_CLOSETOGETHER) || 
+                              (SingleTrailMethod == SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE && type == worstLossType);
+         
+         if(shouldInclude) {
+            ArrayResize(profitableOrders, profitableCount + 1);
+            profitableOrders[profitableCount].ticket = ticket;
+            profitableOrders[profitableCount].profit = profit;
+            profitableOrders[profitableCount].type = type;
+            profitableOrders[profitableCount].lots = lots;
+            profitableCount++;
+         }
       }
    }
    
    // Need at least one losing order and some profitable orders to trail
-   if((farthestBuyTicket == 0 && farthestSellTicket == 0) || profitableCount == 0) {
+   if(worstLossTicket == 0 || profitableCount == 0) {
+      if(worstLossTicket > 0 && profitableCount == 0 && SingleTrailMethod == SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE) {
+         string lossTypeStr = (worstLossType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+         Log(3, StringFormat("GT | Skip: Worst loss is %s but no profitable %s orders found", lossTypeStr, lossTypeStr));
+      }
       g_groupTrail.active = false;
       return;
    }
    
-   // Calculate total loss from farthest orders
+   // Get exact loss value
    double totalLoss = 0.0;
-   double farthestBuyLoss = 0.0;
-   double farthestSellLoss = 0.0;
-   
-   if(farthestBuyTicket > 0) {
-      if(PositionSelectByTicket(farthestBuyTicket)) {
-         farthestBuyLoss = PositionGetDouble(POSITION_PROFIT);
-         totalLoss += farthestBuyLoss;
-      }
-   }
-   
-   if(farthestSellTicket > 0) {
-      if(PositionSelectByTicket(farthestSellTicket)) {
-         farthestSellLoss = PositionGetDouble(POSITION_PROFIT);
-         totalLoss += farthestSellLoss;
-      }
+   if(PositionSelectByTicket(worstLossTicket)) {
+      totalLoss = PositionGetDouble(POSITION_PROFIT); // Negative value
    }
    
    // Sort profitable orders by profit (highest first) to select farthest in profit
@@ -1985,9 +2004,9 @@ void UpdateGroupTrailing() {
       }
    }
    
-   // Calculate combined profit (selected profitable orders + farthest losing orders)
+   // Calculate combined profit (selected profitable orders + single worst loss order)
    double combinedProfit = selectedProfit + totalLoss;
-   int groupCount = selectedCount + (farthestBuyTicket > 0 ? 1 : 0) + (farthestSellTicket > 0 ? 1 : 0);
+   int groupCount = selectedCount + 1; // 1 loss order + selected profitable orders
    
    // Calculate threshold and gap if not active
    if(!g_groupTrail.active) {
@@ -1995,8 +2014,14 @@ void UpdateGroupTrailing() {
       g_groupTrail.threshold = threshold;
       g_groupTrail.gap = threshold * 0.50; // 50% gap like single trailing
       g_groupTrail.peakProfit = 0.0;
-      g_groupTrail.farthestBuyTicket = farthestBuyTicket;
-      g_groupTrail.farthestSellTicket = farthestSellTicket;
+      // Store the worst loss ticket in appropriate field based on type
+      if(worstLossType == POSITION_TYPE_BUY) {
+         g_groupTrail.farthestBuyTicket = worstLossTicket;
+         g_groupTrail.farthestSellTicket = 0;
+      } else {
+         g_groupTrail.farthestBuyTicket = 0;
+         g_groupTrail.farthestSellTicket = worstLossTicket;
+      }
    }
    
    // Update peak
@@ -2004,11 +2029,13 @@ void UpdateGroupTrailing() {
       g_groupTrail.peakProfit = combinedProfit;
    }
    
-   // Check if group should start trailing
-   if(!g_groupTrail.active && combinedProfit >= g_groupTrail.threshold) {
+   // Check if group should start trailing (with activation buffer)
+   string worstLossTypeStr = (worstLossType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+   double activationThreshold = g_groupTrail.threshold * (1.0 + GroupActivationBuffer);
+   if(!g_groupTrail.active && combinedProfit >= activationThreshold) {
       g_groupTrail.active = true;
-      Log(1, StringFormat("GT ACTIVE | Combined=%.2f Peak=%.2f | Loss: BUY=#%I64u(%.2f) SELL=#%I64u(%.2f) | Selected %d profitable orders (%.2f profit)",
-          combinedProfit, g_groupTrail.peakProfit, farthestBuyTicket, farthestBuyLoss, farthestSellTicket, farthestSellLoss, selectedCount, selectedProfit));
+      Log(1, StringFormat("GT ACTIVE | Combined=%.2f Peak=%.2f Threshold=%.2f | Loss: %s #%I64u (%.2f) | Selected %d profitable orders (%.2f profit)",
+          combinedProfit, g_groupTrail.peakProfit, activationThreshold, worstLossTypeStr, worstLossTicket, totalLoss, selectedCount, selectedProfit));
    }
    
    // Trail logic
@@ -2017,48 +2044,43 @@ void UpdateGroupTrailing() {
       
       // Periodic logging (every 10 ticks)
       if((int)GetTickCount() - g_groupTrail.lastLogTick > 10) {
-         Log(2, StringFormat("GT | Combined=%.2f Peak=%.2f Drop=%.2f Gap=%.2f | Group: %d orders (%d profitable, %d loss)",
-             combinedProfit, g_groupTrail.peakProfit, dropFromPeak, g_groupTrail.gap, groupCount, selectedCount, 
-             (farthestBuyTicket > 0 ? 1 : 0) + (farthestSellTicket > 0 ? 1 : 0)));
+         Log(2, StringFormat("GT | Combined=%.2f Peak=%.2f Drop=%.2f Gap=%.2f | Group: %d orders (%d profitable, 1 loss %s)",
+             combinedProfit, g_groupTrail.peakProfit, dropFromPeak, g_groupTrail.gap, groupCount, selectedCount, worstLossTypeStr));
          g_groupTrail.lastLogTick = (int)GetTickCount();
       }
       
-      // Close group if profit drops below trail gap
+      // Close group if profit drops below trail gap AND combined profit is above minimum
       if(dropFromPeak >= g_groupTrail.gap) {
+         // Safety check: don't close if combined profit is below minimum threshold
+         if(combinedProfit < MinGroupProfitToClose) {
+            Log(2, StringFormat("GT HOLD | Combined=%.2f < MinProfit=%.2f | Drop=%.2f >= Gap=%.2f | Waiting for recovery",
+                combinedProfit, MinGroupProfitToClose, dropFromPeak, g_groupTrail.gap));
+            // Reset peak to current to give it another chance to recover
+            g_groupTrail.peakProfit = combinedProfit;
+            return;
+         }
+         
          Log(1, StringFormat("GT CLOSE | Combined=%.2f Peak=%.2f Drop=%.2f >= Gap=%.2f",
              combinedProfit, g_groupTrail.peakProfit, dropFromPeak, g_groupTrail.gap));
          
          int closedCount = 0;
          double closedProfit = 0.0;
          
-         // Close the farthest losing orders
-         if(farthestBuyTicket > 0) {
-            if(PositionSelectByTicket(farthestBuyTicket)) {
-               double lots = PositionGetDouble(POSITION_VOLUME);
-               double profit = PositionGetDouble(POSITION_PROFIT);
-               if(trade.PositionClose(farthestBuyTicket)) {
-                  closedCount++;
-                  closedProfit += profit;
-                  Log(1, StringFormat("GT CLOSE #%I64u BUY %.2f lots | Loss=%.2f",
-                      farthestBuyTicket, lots, profit));
-               }
+         // Close the single worst losing order
+         if(PositionSelectByTicket(worstLossTicket)) {
+            double lots = PositionGetDouble(POSITION_VOLUME);
+            double profit = PositionGetDouble(POSITION_PROFIT);
+            if(trade.PositionClose(worstLossTicket)) {
+               closedCount++;
+               closedProfit += profit;
+               Log(1, StringFormat("GT CLOSE #%I64u %s %.2f lots | Loss=%.2f",
+                   worstLossTicket, worstLossTypeStr, lots, profit));
             }
          }
          
-         if(farthestSellTicket > 0) {
-            if(PositionSelectByTicket(farthestSellTicket)) {
-               double lots = PositionGetDouble(POSITION_VOLUME);
-               double profit = PositionGetDouble(POSITION_PROFIT);
-               if(trade.PositionClose(farthestSellTicket)) {
-                  closedCount++;
-                  closedProfit += profit;
-                  Log(1, StringFormat("GT CLOSE #%I64u SELL %.2f lots | Loss=%.2f",
-                      farthestSellTicket, lots, profit));
-               }
-            }
-         }
-         
-         // Close selected profitable orders (farthest in profit)
+         // Close selected profitable orders - BUT verify they're still profitable NOW
+         int profitOrdersClosed = 0;
+         double profitFromOrders = 0.0;
          for(int i = 0; i < selectedCount; i++) {
             if(PositionSelectByTicket(selectedTickets[i])) {
                double lots = PositionGetDouble(POSITION_VOLUME);
@@ -2066,13 +2088,27 @@ void UpdateGroupTrailing() {
                int type = (int)PositionGetInteger(POSITION_TYPE);
                string typeStr = (type == POSITION_TYPE_BUY) ? "BUY" : "SELL";
                
-               if(trade.PositionClose(selectedTickets[i])) {
-                  closedCount++;
-                  closedProfit += profit;
-                  Log(1, StringFormat("GT CLOSE #%I64u %s %.2f lots | Profit=%.2f (farthest profit)",
+               // SAFETY: Only close if still in profit at this moment
+               if(profit > 0) {
+                  if(trade.PositionClose(selectedTickets[i])) {
+                     closedCount++;
+                     closedProfit += profit;
+                     profitOrdersClosed++;
+                     profitFromOrders += profit;
+                     Log(1, StringFormat("GT CLOSE #%I64u %s %.2f lots | Profit=%.2f (farthest profit)",
+                         selectedTickets[i], typeStr, lots, profit));
+                  }
+               } else {
+                  Log(2, StringFormat("GT SKIP #%I64u %s %.2f lots | Changed to loss=%.2f (was profitable when selected)",
                       selectedTickets[i], typeStr, lots, profit));
                }
             }
+         }
+         
+         // Final safety check: If net result is still loss, log warning
+         if(closedProfit < 0) {
+            Log(1, StringFormat("GT WARNING | Closed at loss %.2f despite safety checks | Closed: 1 loss + %d profit orders",
+                closedProfit, profitOrdersClosed));
          }
          
          Log(1, StringFormat("GT CLOSED %d orders together | Net P/L: %.2f | Remaining orders continue trading",
@@ -2103,9 +2139,9 @@ void UpdateGroupTrailing() {
             ObjectSetInteger(0, vlineName, OBJPROP_SELECTABLE, false);
             
             // Show group trail details in vline text
-            string vlinetext = StringFormat("GT: %d closed | Net P/L: %.2f | %d profit (%.2f) + %d loss (%.2f) | Peak: %.2f Drop: %.2f",
+            string vlinetext = StringFormat("GT: %d closed | Net P/L: %.2f | %d profit (%.2f) + 1 loss %s (%.2f) | Peak: %.2f Drop: %.2f",
                 closedCount, closedProfit, selectedCount, selectedProfit, 
-                (farthestBuyTicket > 0 ? 1 : 0) + (farthestSellTicket > 0 ? 1 : 0), totalLoss,
+                worstLossTypeStr, totalLoss,
                 g_groupTrail.peakProfit, dropFromPeak);
             ObjectSetString(0, vlineName, OBJPROP_TEXT, vlinetext);
             ChartRedraw(0);
@@ -2130,7 +2166,8 @@ void TrailSinglePositions() {
    if(!EnableSingleTrailing) return;
    
    // Route to appropriate trailing method
-   if(SingleTrailMethod == SINGLE_TRAIL_CLOSETOGETHER) {
+   if(SingleTrailMethod == SINGLE_TRAIL_CLOSETOGETHER || 
+      SingleTrailMethod == SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE) {
       UpdateGroupTrailing();
       return;
    }
@@ -2629,6 +2666,58 @@ void UpdateCurrentProfitVline() {
    ObjectSetString(0, centerName, OBJPROP_TEXT, centerText);
    ObjectSetInteger(0, centerName, OBJPROP_COLOR, centerColor);
    
+   // Label 8: Center Label Line 2 - Cycle Profit & Booked Profit
+   // bookedCycle is already calculated earlier in this function
+   
+   // Create cycle/booked label split into two parts for different colors
+   string centerName2Cycle = "CenterCycleLabel";
+   string centerName2Booked = "CenterBookedLabel";
+   int centerY2 = centerY + 45; // Position below main center label
+   
+   // Calculate text widths for positioning (approximate)
+   string cycleText = StringFormat("%.0f", cycleProfit);
+   string bookedText = StringFormat("%.0f", bookedCycle);
+   int cycleWidth = StringLen(cycleText) * 12; // Approximate pixel width per character
+   int bookedWidth = StringLen(bookedText) * 12;
+   int totalWidth = cycleWidth + bookedWidth + 20; // 20 for space between
+   
+   color cycleColor = (cycleProfit >= 0) ? clrLime : clrRed;
+   color bookedColor = (bookedCycle >= 0) ? clrLime : clrRed;
+   
+   // Create/update cycle profit label (left part)
+   if(ObjectFind(0, centerName2Cycle) < 0) {
+      ObjectCreate(0, centerName2Cycle, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, centerName2Cycle, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, centerName2Cycle, OBJPROP_ANCHOR, ANCHOR_RIGHT);
+      ObjectSetInteger(0, centerName2Cycle, OBJPROP_FONTSIZE, 24);
+      ObjectSetString(0, centerName2Cycle, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, centerName2Cycle, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, centerName2Cycle, OBJPROP_HIDDEN, false);
+      ObjectSetInteger(0, centerName2Cycle, OBJPROP_BACK, false);
+      ObjectSetInteger(0, centerName2Cycle, OBJPROP_ZORDER, 0);
+   }
+   ObjectSetInteger(0, centerName2Cycle, OBJPROP_XDISTANCE, centerX - 10);
+   ObjectSetInteger(0, centerName2Cycle, OBJPROP_YDISTANCE, centerY2);
+   ObjectSetString(0, centerName2Cycle, OBJPROP_TEXT, cycleText);
+   ObjectSetInteger(0, centerName2Cycle, OBJPROP_COLOR, cycleColor);
+   
+   // Create/update booked profit label (right part)
+   if(ObjectFind(0, centerName2Booked) < 0) {
+      ObjectCreate(0, centerName2Booked, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, centerName2Booked, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, centerName2Booked, OBJPROP_ANCHOR, ANCHOR_LEFT);
+      ObjectSetInteger(0, centerName2Booked, OBJPROP_FONTSIZE, 24);
+      ObjectSetString(0, centerName2Booked, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, centerName2Booked, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, centerName2Booked, OBJPROP_HIDDEN, false);
+      ObjectSetInteger(0, centerName2Booked, OBJPROP_BACK, false);
+      ObjectSetInteger(0, centerName2Booked, OBJPROP_ZORDER, 0);
+   }
+   ObjectSetInteger(0, centerName2Booked, OBJPROP_XDISTANCE, centerX + 10);
+   ObjectSetInteger(0, centerName2Booked, OBJPROP_YDISTANCE, centerY2);
+   ObjectSetString(0, centerName2Booked, OBJPROP_TEXT, bookedText);
+   ObjectSetInteger(0, centerName2Booked, OBJPROP_COLOR, bookedColor);
+   
    ChartRedraw(0);
 }
 void OnDeinit(const int reason) {
@@ -2639,6 +2728,8 @@ void OnDeinit(const int reason) {
    ObjectDelete(0, "BtnToggleLabels");
    ObjectDelete(0, "BtnToggleNextLines");
    ObjectDelete(0, "CenterProfitLabel");
+   ObjectDelete(0, "CenterCycleLabel");
+   ObjectDelete(0, "CenterBookedLabel");
    ObjectDelete(0, "NextBuyLevelUp");
    ObjectDelete(0, "NextBuyLevelDown");
    ObjectDelete(0, "NextSellLevelUp");
