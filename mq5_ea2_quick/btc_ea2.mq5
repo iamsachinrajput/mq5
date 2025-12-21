@@ -2607,10 +2607,8 @@ void UpdateGroupTrailing(bool useSameTypeOnly = false) {
             ObjectSetInteger(0, vlineName, OBJPROP_SELECTABLE, false);
             
             // Show group trail details in vline text
-            string vlinetext = StringFormat("GT: %d closed | Net P/L: %.2f | %d profit (%.2f) + 1 loss %s (%.2f) | Peak: %.2f Drop: %.2f",
-                closedCount, closedProfit, selectedCount, selectedProfit, 
-                worstLossTypeStr, totalLoss,
-                g_groupTrail.peakProfit, dropFromPeak);
+            string vlinetext = StringFormat("GT:%d(%dP%.0f %dL%.0f %s)%.1f",
+                closedCount, selectedCount, selectedProfit, 1, totalLoss, worstLossTypeStr, closedProfit);
             ObjectSetString(0, vlineName, OBJPROP_TEXT, vlinetext);
             ChartRedraw(0);
             
@@ -3230,13 +3228,13 @@ void UpdateCurrentProfitVline() {
    }
    UpdateOrCreateLabel("Last5DaysOverallLabel", 10, 166, label8text, clrYellow, 9, "Arial");
    
-   // Label 9: Center Label Line 1 - Total Profit / Max Overall Loss
+   // Label 9: Center Label Line 1 - Total Profit / GLO
    long chartWidth = ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
    long chartHeight = ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
    int centerX = (int)(chartWidth / 2);
    int centerY = (int)(chartHeight / 2);
    
-   string centerText = StringFormat("T%.0f/%.0f", overallProfit, g_overallMaxLoss);
+   string centerText = StringFormat("T%.0f/%d", overallProfit, g_orders_in_loss);
    color centerColor = (overallProfit >= 0) ? clrLime : clrRed;
    
    // Create center label with absolute positioning
@@ -3274,7 +3272,7 @@ void UpdateCurrentProfitVline() {
    
    // Calculate text widths for positioning (approximate)
    string cycleText = StringFormat("P%.0f", cycleProfit);
-   string bookedText = StringFormat(" E%.0f", bookedCycle);
+   string bookedText = StringFormat("E%.0f N%.2f", bookedCycle, g_netLots);
    int cycleWidth = StringLen(cycleText) * 12; // Approximate pixel width per character
    int bookedWidth = StringLen(bookedText) * 12;
    int totalWidth = cycleWidth + bookedWidth + 20; // 20 for space between
@@ -3318,11 +3316,11 @@ void UpdateCurrentProfitVline() {
    ObjectSetString(0, centerName2Booked, OBJPROP_TEXT, bookedText);
    ObjectSetInteger(0, centerName2Booked, OBJPROP_COLOR, bookedColor);
    
-   // Label 11: Center Label Line 3 - Net Lots / Max Lot Size / Current GLO
+   // Label 11: Center Label Line 3 - Max Loss Cycle / Max Overall Loss / Max Lot Size
    string centerName3 = "CenterNetLotsLabel";
    int centerY3 = centerY2 + (int)(CenterPanel2FontSize * 1.25);
    
-   string netLotsText = StringFormat("N%.2f/%.2f/%d", g_netLots, g_maxLotsCycle, g_orders_in_loss);
+   string netLotsText = StringFormat("L%.0f/%.0f/%.2f", g_maxLossCycle, g_overallMaxLoss, g_maxLotsCycle);
    color netLotsColor = clrWhite;
    
    // Create/update net lots label (centered)
