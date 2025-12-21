@@ -142,6 +142,9 @@ bool g_pendingStopNewOrders = false; // Pending action after next close-all
 bool g_pendingNoWork = false;    // Pending action after next close-all
 bool g_showLabels = true;        // If true: show all labels, if false: hide for performance
 bool g_showNextLevelLines = true; // If true: show and calculate next level lines (toggle via button)
+int  g_currentDebugLevel = 3;    // Current debug level (modifiable at runtime, initialized from DebugLevel input)
+int  g_singleTrailMode = 1;      // Single trail sensitivity: 0=Tight, 1=Normal, 2=Loose
+int  g_totalTrailMode = 1;       // Total trail sensitivity: 0=Tight, 1=Normal, 2=Loose
 
 // Total Trailing State
 bool   g_trailActive = false;
@@ -215,7 +218,7 @@ int g_orderCount = 0;   // Active order count in array
 
 //============================= UTILITY FUNCTIONS ==================//
 void Log(int level, string msg) {
-   if(level <= DebugLevel) Print("[Log", level, "] ", msg);
+   if(level <= g_currentDebugLevel) Print("[Log", level, "] ", msg);
 }
 
 //============================= ORDER TRACKING SYSTEM ==============//
@@ -550,6 +553,78 @@ void CreateButtons() {
       ObjectSetInteger(0, btn5Name, OBJPROP_HIDDEN, false);
    }
    
+   // Button 6: Print Stats
+   string btn6Name = "BtnPrintStats";
+   if(ObjectFind(0, btn6Name) < 0) {
+      ObjectCreate(0, btn6Name, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, btn6Name, OBJPROP_XDISTANCE, rightMargin);
+      ObjectSetInteger(0, btn6Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 5);
+      ObjectSetInteger(0, btn6Name, OBJPROP_XSIZE, buttonWidth);
+      ObjectSetInteger(0, btn6Name, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetInteger(0, btn6Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetString(0, btn6Name, OBJPROP_TEXT, "Print Stats");
+      ObjectSetInteger(0, btn6Name, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, btn6Name, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, btn6Name, OBJPROP_BGCOLOR, clrDarkBlue);
+      ObjectSetInteger(0, btn6Name, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btn6Name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, btn6Name, OBJPROP_HIDDEN, false);
+   }
+   
+   // Button 7: Debug Level
+   string btn7Name = "BtnDebugLevel";
+   if(ObjectFind(0, btn7Name) < 0) {
+      ObjectCreate(0, btn7Name, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, btn7Name, OBJPROP_XDISTANCE, rightMargin);
+      ObjectSetInteger(0, btn7Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 6);
+      ObjectSetInteger(0, btn7Name, OBJPROP_XSIZE, buttonWidth);
+      ObjectSetInteger(0, btn7Name, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetInteger(0, btn7Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetString(0, btn7Name, OBJPROP_TEXT, "Debug: 3");
+      ObjectSetInteger(0, btn7Name, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, btn7Name, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, btn7Name, OBJPROP_BGCOLOR, clrDarkGreen);
+      ObjectSetInteger(0, btn7Name, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btn7Name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, btn7Name, OBJPROP_HIDDEN, false);
+   }
+   
+   // Button 8: Single Trail Mode
+   string btn8Name = "BtnSingleTrail";
+   if(ObjectFind(0, btn8Name) < 0) {
+      ObjectCreate(0, btn8Name, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, btn8Name, OBJPROP_XDISTANCE, rightMargin);
+      ObjectSetInteger(0, btn8Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 7);
+      ObjectSetInteger(0, btn8Name, OBJPROP_XSIZE, buttonWidth);
+      ObjectSetInteger(0, btn8Name, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetInteger(0, btn8Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetString(0, btn8Name, OBJPROP_TEXT, "STrail: NORMAL");
+      ObjectSetInteger(0, btn8Name, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, btn8Name, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, btn8Name, OBJPROP_BGCOLOR, clrDarkBlue);
+      ObjectSetInteger(0, btn8Name, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btn8Name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, btn8Name, OBJPROP_HIDDEN, false);
+   }
+   
+   // Button 9: Total Trail Mode
+   string btn9Name = "BtnTotalTrail";
+   if(ObjectFind(0, btn9Name) < 0) {
+      ObjectCreate(0, btn9Name, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, btn9Name, OBJPROP_XDISTANCE, rightMargin);
+      ObjectSetInteger(0, btn9Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 8);
+      ObjectSetInteger(0, btn9Name, OBJPROP_XSIZE, buttonWidth);
+      ObjectSetInteger(0, btn9Name, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetInteger(0, btn9Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetString(0, btn9Name, OBJPROP_TEXT, "TTrail: NORMAL");
+      ObjectSetInteger(0, btn9Name, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, btn9Name, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, btn9Name, OBJPROP_BGCOLOR, clrDarkBlue);
+      ObjectSetInteger(0, btn9Name, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btn9Name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, btn9Name, OBJPROP_HIDDEN, false);
+   }
+   
    UpdateButtonStates();
 }
 
@@ -616,6 +691,104 @@ void UpdateButtonStates() {
       ObjectSetInteger(0, btn5Name, OBJPROP_COLOR, clrWhite);
       ObjectSetInteger(0, btn5Name, OBJPROP_STATE, false);
    }
+   
+   // Update Button 6: Print Stats (always same appearance)
+   string btn6Name = "BtnPrintStats";
+   ObjectSetString(0, btn6Name, OBJPROP_TEXT, "Print Stats");
+   ObjectSetInteger(0, btn6Name, OBJPROP_BGCOLOR, clrDarkBlue);
+   ObjectSetInteger(0, btn6Name, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, btn6Name, OBJPROP_STATE, false);
+   
+   // Update Button 7: Debug Level
+   string btn7Name = "BtnDebugLevel";
+   string debugText = "";
+   color debugColor = clrDarkGray;
+   
+   switch(g_currentDebugLevel) {
+      case 0:
+         debugText = "Debug: OFF";
+         debugColor = clrDarkGray;
+         break;
+      case 1:
+         debugText = "Debug: CRITICAL";
+         debugColor = clrDarkRed;
+         break;
+      case 2:
+         debugText = "Debug: INFO";
+         debugColor = clrDarkOrange;
+         break;
+      case 3:
+         debugText = "Debug: VERBOSE";
+         debugColor = clrDarkGreen;
+         break;
+      default:
+         debugText = StringFormat("Debug: %d", g_currentDebugLevel);
+         debugColor = clrDarkBlue;
+         break;
+   }
+   
+   ObjectSetString(0, btn7Name, OBJPROP_TEXT, debugText);
+   ObjectSetInteger(0, btn7Name, OBJPROP_BGCOLOR, debugColor);
+   ObjectSetInteger(0, btn7Name, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, btn7Name, OBJPROP_STATE, false);
+   
+   // Update Button 8: Single Trail Mode
+   string btn8Name = "BtnSingleTrail";
+   string trailText = "";
+   color trailColor = clrDarkBlue;
+   
+   switch(g_singleTrailMode) {
+      case 0:
+         trailText = "STrail: TIGHT";
+         trailColor = clrDarkRed;  // Closes sooner
+         break;
+      case 1:
+         trailText = "STrail: NORMAL";
+         trailColor = clrDarkBlue;  // Default
+         break;
+      case 2:
+         trailText = "STrail: LOOSE";
+         trailColor = clrDarkGreen;  // Trails longer
+         break;
+      default:
+         trailText = StringFormat("STrail: %d", g_singleTrailMode);
+         trailColor = clrDarkGray;
+         break;
+   }
+   
+   ObjectSetString(0, btn8Name, OBJPROP_TEXT, trailText);
+   ObjectSetInteger(0, btn8Name, OBJPROP_BGCOLOR, trailColor);
+   ObjectSetInteger(0, btn8Name, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, btn8Name, OBJPROP_STATE, false);
+   
+   // Update Button 9: Total Trail Mode
+   string btn9Name = "BtnTotalTrail";
+   string totalTrailText = "";
+   color totalTrailColor = clrDarkBlue;
+   
+   switch(g_totalTrailMode) {
+      case 0:
+         totalTrailText = "TTrail: TIGHT";
+         totalTrailColor = clrDarkRed;  // Closes sooner
+         break;
+      case 1:
+         totalTrailText = "TTrail: NORMAL";
+         totalTrailColor = clrDarkBlue;  // Default
+         break;
+      case 2:
+         totalTrailText = "TTrail: LOOSE";
+         totalTrailColor = clrDarkGreen;  // Trails longer
+         break;
+      default:
+         totalTrailText = StringFormat("TTrail: %d", g_totalTrailMode);
+         totalTrailColor = clrDarkGray;
+         break;
+   }
+   
+   ObjectSetString(0, btn9Name, OBJPROP_TEXT, totalTrailText);
+   ObjectSetInteger(0, btn9Name, OBJPROP_BGCOLOR, totalTrailColor);
+   ObjectSetInteger(0, btn9Name, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, btn9Name, OBJPROP_STATE, false);
    
    ChartRedraw(0);
 }
@@ -2242,6 +2415,9 @@ void PerformCloseAll(string reason = "Manual") {
    g_trailPeak = 0.0;
    g_trailFloor = 0.0;
    
+   // Delete total trail line
+   ObjectDelete(0, "TotalTrailFloor");
+   
    // Apply pending button actions (single-click delayed actions)
    if(g_pendingStopNewOrders) {
       g_stopNewOrders = true;
@@ -2268,12 +2444,18 @@ void TrailTotalProfit() {
    // Skip closing in No Work mode
    if(g_noWork) return;
    
+   // Delete total trail line if labels are hidden
+   if(!g_showLabels) {
+      ObjectDelete(0, "TotalTrailFloor");
+   }
+   
    // Need at least 3 positions to activate
    int totalPos = g_buyCount + g_sellCount;
    if(totalPos < 3) {
       if(g_trailActive) {
          Log(2, "TT deactivated: insufficient positions");
          g_trailActive = false;
+         ObjectDelete(0, "TotalTrailFloor");  // Delete line when trail not active
       }
       return;
    }
@@ -2287,7 +2469,10 @@ void TrailTotalProfit() {
    g_trailStart = MathMax(lossStart, profitStart);
    
    if(g_trailStart > 0) {
-      g_trailGap = MathMin(g_trailStart * TrailGapPct, MaxTrailGap);
+      // Apply total trail mode multiplier: Tight=0.5x, Normal=1.0x, Loose=2.0x
+      double baseGap = g_trailStart * TrailGapPct;
+      double modeMultiplier = (g_totalTrailMode == 0) ? 0.5 : ((g_totalTrailMode == 2) ? 2.0 : 1.0);
+      g_trailGap = MathMin(baseGap * modeMultiplier, MaxTrailGap * modeMultiplier);
    }
    
    // Debug: show trail decision values
@@ -2309,8 +2494,10 @@ void TrailTotalProfit() {
          g_trailFloor = g_trailPeak - g_trailGap;
          double lossStart = g_maxLossCycle * TrailStartPct;
          double profitStart = g_maxProfitCycle * 1.0;
-         Log(1, StringFormat("TT START: profit=%.2f start=%.2f gap=%.2f floor=%.2f | NetLots=%.2f | MaxLoss=%.2f LossStart=%.2f MaxProfit=%.2f ProfitStart=%.2f", 
-             cycleProfit, g_trailStart, g_trailGap, g_trailFloor, MathAbs(g_netLots), g_maxLossCycle, lossStart, g_maxProfitCycle, profitStart));
+         double modeMultiplier = (g_totalTrailMode == 0) ? 0.5 : ((g_totalTrailMode == 2) ? 2.0 : 1.0);
+         string modeName = (g_totalTrailMode == 0) ? "TIGHT" : ((g_totalTrailMode == 2) ? "LOOSE" : "NORMAL");
+         Log(1, StringFormat("TT START: profit=%.2f start=%.2f gap=%.2f (%.1fx-%s) floor=%.2f | NetLots=%.2f | MaxLoss=%.2f LossStart=%.2f MaxProfit=%.2f ProfitStart=%.2f", 
+             cycleProfit, g_trailStart, g_trailGap, modeMultiplier, modeName, g_trailFloor, MathAbs(g_netLots), g_maxLossCycle, lossStart, g_maxProfitCycle, profitStart));
       }
    }
    
@@ -2320,6 +2507,49 @@ void TrailTotalProfit() {
          g_trailPeak = cycleProfit;
          g_trailFloor = g_trailPeak - g_trailGap;
          Log(2, StringFormat("TT UPDATE: peak=%.2f floor=%.2f", g_trailPeak, g_trailFloor));
+      }
+      
+      // Update total trail floor line (show only when labels are enabled)
+      if(g_showLabels) {
+         // Calculate floor price based on equity
+         double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+         double floorEquity = g_lastCloseEquity + g_trailFloor;
+         
+         // Convert equity floor to approximate price level
+         // We'll show the line at the average position price adjusted by profit needed
+         double avgPrice = 0.0;
+         double totalLots = 0.0;
+         
+         for(int i = PositionsTotal() - 1; i >= 0; i--) {
+            if(!PositionSelectByTicket(PositionGetTicket(i))) continue;
+            if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+            if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
+            
+            double posLots = PositionGetDouble(POSITION_VOLUME);
+            double posPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+            avgPrice += posPrice * posLots;
+            totalLots += posLots;
+         }
+         
+         if(totalLots > 0) {
+            avgPrice /= totalLots;
+            
+            // Create or update horizontal line
+            string lineName = "TotalTrailFloor";
+            
+            if(ObjectFind(0, lineName) < 0) {
+               ObjectCreate(0, lineName, OBJ_HLINE, 0, 0, avgPrice);
+               ObjectSetInteger(0, lineName, OBJPROP_COLOR, clrBlue);  // Solid blue color
+               ObjectSetInteger(0, lineName, OBJPROP_WIDTH, 4);  // Width 4 for total trail
+               ObjectSetInteger(0, lineName, OBJPROP_STYLE, STYLE_DOT);  // Dotted style
+               ObjectSetInteger(0, lineName, OBJPROP_BACK, false);
+               ObjectSetInteger(0, lineName, OBJPROP_SELECTABLE, false);
+               ObjectSetString(0, lineName, OBJPROP_TEXT, StringFormat("TT Floor: %.2f (Equity: %.2f)", g_trailFloor, floorEquity));
+            } else {
+               // Update text with current floor values
+               ObjectSetString(0, lineName, OBJPROP_TEXT, StringFormat("TT Floor: %.2f (Equity: %.2f)", g_trailFloor, floorEquity));
+            }
+         }
       }
       
       // Check for close trigger
@@ -2358,10 +2588,76 @@ void RemoveTrail(int index) {
    int size = ArraySize(g_trails);
    if(index < 0 || index >= size) return;
    
+   // Delete horizontal line for this trail
+   string lineName = StringFormat("TrailFloor_%I64u", g_trails[index].ticket);
+   ObjectDelete(0, lineName);
+   
    for(int i = index; i < size - 1; i++) {
       g_trails[i] = g_trails[i + 1];
    }
    ArrayResize(g_trails, size - 1);
+}
+
+// Update horizontal lines for all active single trails
+void UpdateSingleTrailLines() {
+   if(!g_showLabels) {
+      // Delete all trail lines if labels are hidden
+      for(int i = 0; i < ArraySize(g_trails); i++) {
+         string lineName = StringFormat("TrailFloor_%I64u", g_trails[i].ticket);
+         ObjectDelete(0, lineName);
+      }
+      return;
+   }
+   
+   for(int i = 0; i < ArraySize(g_trails); i++) {
+      if(!g_trails[i].active) continue; // Only show lines for active trails
+      
+      ulong ticket = g_trails[i].ticket;
+      if(!PositionSelectByTicket(ticket)) continue;
+      
+      double lots = PositionGetDouble(POSITION_VOLUME);
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      int posType = (int)PositionGetInteger(POSITION_TYPE);
+      
+      // Calculate floor price (close trigger price)
+      double activePeak = g_trails[i].activePeak;
+      double gap = g_trails[i].gap;
+      double trailFloorPPL = activePeak - gap;
+      
+      // Convert PPL to actual price
+      // PPL = profit per 0.01 lot
+      // For BUY: close when bid <= floorPrice
+      // For SELL: close when ask >= floorPrice
+      double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+      double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+      if(tickSize == 0 || tickValue == 0) continue;
+      
+      double priceMove = (trailFloorPPL * tickSize) / (tickValue * 0.01);
+      double floorPrice;
+      
+      if(posType == POSITION_TYPE_BUY) {
+         floorPrice = openPrice + priceMove;
+      } else {
+         floorPrice = openPrice - priceMove;
+      }
+      
+      // Create or update horizontal line
+      string lineName = StringFormat("TrailFloor_%I64u", ticket);
+      
+      if(ObjectFind(0, lineName) < 0) {
+         ObjectCreate(0, lineName, OBJ_HLINE, 0, 0, floorPrice);
+         ObjectSetInteger(0, lineName, OBJPROP_COLOR, clrBlue);  // Solid blue color
+         ObjectSetInteger(0, lineName, OBJPROP_WIDTH, 2);  // Width 2 for single trail
+         ObjectSetInteger(0, lineName, OBJPROP_STYLE, STYLE_DOT);  // Dotted style
+         ObjectSetInteger(0, lineName, OBJPROP_BACK, false);
+         ObjectSetInteger(0, lineName, OBJPROP_SELECTABLE, false);
+         string levelInfo = GetLevelInfoForTicket(ticket);
+         ObjectSetString(0, lineName, OBJPROP_TEXT, StringFormat("ST Floor %s #%I64u", levelInfo, ticket));
+      } else {
+         // Update price if it changed
+         ObjectSetDouble(0, lineName, OBJPROP_PRICE, floorPrice);
+      }
+   }
 }
 
 //============================= GROUP TRAILING (CLOSE TOGETHER) ====//
@@ -2627,6 +2923,79 @@ void UpdateGroupTrailing(bool useSameTypeOnly = false) {
    }
 }
 
+//============================= PRINT STATS FUNCTION ===============//
+void PrintCurrentStats() {
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double cycleProfit = equity - g_lastCloseEquity;
+   double openProfit = g_totalProfit;
+   double bookedCycle = cycleProfit - openProfit;
+   double overallProfit = equity - g_startingEquity;
+   
+   Log(1, "========== CURRENT EA STATISTICS ==========");
+   Log(1, StringFormat("Cycle P:%.0f Max:%.0f Loss:%.0f | Overall:%.0f Max:%.0f Loss:%.0f",
+       cycleProfit, g_maxProfitCycle, -g_maxLossCycle, overallProfit, g_overallMaxProfit, -g_overallMaxLoss));
+   Log(1, StringFormat("Open:%.0f Booked:%.0f | Equity:%.0f Start:%.0f LastClose:%.0f",
+       openProfit, bookedCycle, equity, g_startingEquity, g_lastCloseEquity));
+   Log(1, StringFormat("Orders: B%d/%.2f S%d/%.2f Net%.2f | NextLot B%.2f S%.2f",
+       g_buyCount, g_buyLots, g_sellCount, g_sellLots, g_netLots, g_nextBuyLot, g_nextSellLot));
+   Log(1, StringFormat("MaxLot: Cycle%.2f Overall%.2f | GLO:%d/%d | Spread:%.1f/%.1f",
+       g_maxLotsCycle, g_overallMaxLotSize, g_orders_in_loss, g_maxGLOOverall, 
+       (SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * _Point)/_Point, g_maxSpread/_Point));
+   
+   // Print order tracker buffer
+   Log(1, StringFormat("Order Tracker: %d orders in buffer", g_orderCount));
+   
+   // Create array of valid orders with their levels
+   struct OrderDisplay {
+      int level;
+      string text;
+   };
+   OrderDisplay validOrders[];
+   int validCount = 0;
+   
+   // Collect valid orders
+   for(int i = 0; i < g_orderCount; i++) {
+      if(g_orders[i].isValid) {
+         ArrayResize(validOrders, validCount + 1);
+         validOrders[validCount].level = g_orders[i].level;
+         string typeStr = (g_orders[i].type == POSITION_TYPE_BUY) ? "B" : "S";
+         validOrders[validCount].text = StringFormat("%d%s%.2f", g_orders[i].level, typeStr, g_orders[i].lotSize);
+         validCount++;
+      }
+   }
+   
+   // Sort by level (simple bubble sort)
+   for(int i = 0; i < validCount - 1; i++) {
+      for(int j = 0; j < validCount - i - 1; j++) {
+         if(validOrders[j].level > validOrders[j + 1].level) {
+            // Swap
+            OrderDisplay temp = validOrders[j];
+            validOrders[j] = validOrders[j + 1];
+            validOrders[j + 1] = temp;
+         }
+      }
+   }
+   
+   // Print sorted orders
+   string orderBuffer = "";
+   int printedCount = 0;
+   for(int i = 0; i < validCount; i++) {
+      orderBuffer += validOrders[i].text + " ";
+      printedCount++;
+      // Print every 10 orders on a new line
+      if(printedCount % 10 == 0) {
+         Log(1, orderBuffer);
+         orderBuffer = "";
+      }
+   }
+   // Print remaining orders
+   if(orderBuffer != "") {
+      Log(1, orderBuffer);
+   }
+   
+   Log(1, "===========================================");
+}
+
 //============================= SINGLE TRAILING ===================//
 void TrailSinglePositions() {
    if(!EnableSingleTrailing) return;
@@ -2684,10 +3053,20 @@ void TrailSinglePositions() {
       if(profitPer01 >= effectiveThreshold && idx < 0) {
          AddTrail(ticket, profitPer01, effectiveThreshold);
          idx = FindTrailIndex(ticket);
-         double gapValue = effectiveThreshold / 2.0;
+         
+         // Apply trail mode multiplier: Tight=0.5x, Normal=1.0x, Loose=2.0x
+         double baseGap = effectiveThreshold / 2.0;
+         double modeMultiplier = (g_singleTrailMode == 0) ? 0.5 : ((g_singleTrailMode == 2) ? 2.0 : 1.0);
+         double gapValue = baseGap * modeMultiplier;
+         
+         // Update the trail gap in the array
+         int trailIdx = FindTrailIndex(ticket);
+         if(trailIdx >= 0) g_trails[trailIdx].gap = gapValue;
+         
          string levelInfo = GetLevelInfoForTicket(ticket);
-         Log(2, StringFormat("ST START %s #%I64u PPL=%.2f | Threshold=%.2f Gap=%.2f ActivateAt=%.2f", 
-             levelInfo, ticket, profitPer01, effectiveThreshold, gapValue, effectiveThreshold / 2.0));
+         string modeName = (g_singleTrailMode == 0) ? "TIGHT" : ((g_singleTrailMode == 2) ? "LOOSE" : "NORMAL");
+         Log(2, StringFormat("ST START %s #%I64u PPL=%.2f | Threshold=%.2f Gap=%.2f (%.1fx-%s) ActivateAt=%.2f", 
+             levelInfo, ticket, profitPer01, effectiveThreshold, gapValue, modeMultiplier, modeName, effectiveThreshold / 2.0));
       }
       
       // Update tracking
@@ -2718,6 +3097,7 @@ void TrailSinglePositions() {
             string levelInfo = GetLevelInfoForTicket(ticket);
             Log(1, StringFormat("ST ACTIVE %s #%I64u peak=%.2f | Current=%.2f | Ready to Trail", 
                 levelInfo, ticket, activePeak, profitPer01));
+            UpdateSingleTrailLines(); // Create horizontal line
          }
          
          // Update active peak (trail upward after activation)
@@ -2726,6 +3106,7 @@ void TrailSinglePositions() {
             activePeak = profitPer01;
             string levelInfo = GetLevelInfoForTicket(ticket);
             Log(2, StringFormat("ST PEAK UPDATE %s #%I64u peak=%.2f", levelInfo, ticket, activePeak));
+            UpdateSingleTrailLines(); // Update horizontal line
          }
          
          // Show continuous trail status when active (throttle to avoid spam - every 500ms)
@@ -2751,6 +3132,8 @@ void TrailSinglePositions() {
                    levelInfo, ticket, posType, posLots, posProfit, activePeak, profitPer01, drop, trailFloorValue));
                
                if(trade.PositionClose(ticket)) {
+                  string lineName = StringFormat("TrailFloor_%I64u", ticket);
+                  ObjectDelete(0, lineName);
                   RemoveTrail(idx);
                }
             }
@@ -2882,11 +3265,62 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          
          UpdateButtonStates();
       }
+      
+      // Button 6: Print Stats
+      if(sparam == "BtnPrintStats") {
+         PrintCurrentStats();
+         Log(1, "Stats printed to log");
+      }
+      
+      // Button 7: Debug Level (cycle through 0, 1, 2, 3)
+      if(sparam == "BtnDebugLevel") {
+         g_currentDebugLevel = (g_currentDebugLevel + 1) % 4; // Cycle: 0 -> 1 -> 2 -> 3 -> 0
+         UpdateButtonStates();
+         string levelName = "";
+         switch(g_currentDebugLevel) {
+            case 0: levelName = "0 OFF"; break;
+            case 1: levelName = "1 CRITICAL"; break;
+            case 2: levelName = "2 INFO"; break;
+            case 3: levelName = "3 VERBOSE"; break;
+         }
+         Log(1, StringFormat("Debug Level changed to: %d (%s)", g_currentDebugLevel, levelName));
+      }
+      
+      // Button 8: Single Trail Mode (cycle through 0, 1, 2)
+      if(sparam == "BtnSingleTrail") {
+         g_singleTrailMode = (g_singleTrailMode + 1) % 3; // Cycle: 0 -> 1 -> 2 -> 0
+         UpdateButtonStates();
+         string modeName = "";
+         double multiplier = 1.0;
+         switch(g_singleTrailMode) {
+            case 0: modeName = "TIGHT"; multiplier = 0.5; break;
+            case 1: modeName = "NORMAL"; multiplier = 1.0; break;
+            case 2: modeName = "LOOSE"; multiplier = 2.0; break;
+         }
+         Log(1, StringFormat("Single Trail Mode changed to: %d (%s, gap multiplier=%.1fx)", g_singleTrailMode, modeName, multiplier));
+      }
+      
+      // Button 9: Total Trail Mode (cycle through 0, 1, 2)
+      if(sparam == "BtnTotalTrail") {
+         g_totalTrailMode = (g_totalTrailMode + 1) % 3; // Cycle: 0 -> 1 -> 2 -> 0
+         UpdateButtonStates();
+         string modeName = "";
+         double multiplier = 1.0;
+         switch(g_totalTrailMode) {
+            case 0: modeName = "TIGHT"; multiplier = 0.5; break;
+            case 1: modeName = "NORMAL"; multiplier = 1.0; break;
+            case 2: modeName = "LOOSE"; multiplier = 2.0; break;
+         }
+         Log(1, StringFormat("Total Trail Mode changed to: %d (%s, gap multiplier=%.1fx)", g_totalTrailMode, modeName, multiplier));
+      }
    }
 }
 
 //============================= MAIN FUNCTIONS =====================//
 int OnInit() {
+   // Initialize current debug level from input
+   g_currentDebugLevel = DebugLevel;
+   
    Log(1, StringFormat("EA Init: Magic=%d Gap=%.1f Lot=%.2f", Magic, GapInPoints, BaseLotSize));
    
    double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
@@ -2966,6 +3400,9 @@ void OnTick() {
    
    // Trail individual positions
    TrailSinglePositions();
+   
+   // Update single trail lines
+   UpdateSingleTrailLines();
    
    // Update next level lines
    UpdateNextLevelLines();
@@ -3350,6 +3787,11 @@ void OnDeinit(const int reason) {
    ObjectDelete(0, "BtnCloseAll");
    ObjectDelete(0, "BtnToggleLabels");
    ObjectDelete(0, "BtnToggleNextLines");
+   ObjectDelete(0, "BtnPrintStats");
+   ObjectDelete(0, "BtnDebugLevel");
+   ObjectDelete(0, "BtnSingleTrail");
+   ObjectDelete(0, "BtnTotalTrail");
+   ObjectDelete(0, "TotalTrailFloor");  // Total trail floor line
    ObjectDelete(0, "CenterProfitLabel");
    ObjectDelete(0, "CenterCycleLabel");
    ObjectDelete(0, "CenterBookedLabel");
@@ -3358,6 +3800,12 @@ void OnDeinit(const int reason) {
    ObjectDelete(0, "NextBuyLevelDown");
    ObjectDelete(0, "NextSellLevelUp");
    ObjectDelete(0, "NextSellLevelDown");
+   
+   // Clean up single trail floor lines
+   for(int i = 0; i < ArraySize(g_trails); i++) {
+      string lineName = StringFormat("TrailFloor_%I64u", g_trails[i].ticket);
+      ObjectDelete(0, lineName);
+   }
    
    string reasonText = "Unknown";
    switch(reason) {
