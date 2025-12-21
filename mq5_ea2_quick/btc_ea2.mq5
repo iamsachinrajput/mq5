@@ -69,13 +69,23 @@ enum ENUM_SINGLE_TRAIL_METHOD {
    SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE = 2, // Close Together Same Type - trail worst loss with profitable orders (same side only)
    SINGLE_TRAIL_DYNAMIC = 3,      // Dynamic - switch between single and group trail based on GLO count (uses any side mode when group trailing)
    SINGLE_TRAIL_DYNAMIC_SAMETYPE = 4, // Dynamic Same Type - switch based on GLO, use same-side mode when group trailing
-   SINGLE_TRAIL_DYNAMIC_ANYSIDE = 5   // Dynamic Any Side - switch based on GLO, use any-side mode when group trailing
+   SINGLE_TRAIL_DYNAMIC_ANYSIDE = 5,   // Dynamic Any Side - switch based on GLO, use any-side mode when group trailing
+   SINGLE_TRAIL_HYBRID_BALANCED = 6,   // Hybrid Balanced - switches based on net exposure imbalance
+   SINGLE_TRAIL_HYBRID_ADAPTIVE = 7,   // Hybrid Adaptive - switches based on GLO ratio and profit state
+   SINGLE_TRAIL_HYBRID_SMART = 8,      // Hybrid Smart - uses multiple factors (net exposure, GLO ratio, cycle profit)
+   SINGLE_TRAIL_HYBRID_COUNT_DIFF = 9  // Hybrid Count Diff - switches based on buy/sell order count difference
 };
 input ENUM_SINGLE_TRAIL_METHOD SingleTrailMethod = SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE; // Single trail closing method
 input int MinGLOForGroupTrail = 10; // Minimum GLO orders to activate group trailing
 input int DynamicGLOThreshold = 5; // GLO threshold for dynamic method (< threshold = single trail, >= threshold = group trail)
 input double MinGroupProfitToClose = 0.0; // Minimum combined profit to close group (prevents closing at loss)
 input double GroupActivationBuffer = 0.5; // Extra profit above threshold to activate (0.5 = 50% of threshold)
+
+// Hybrid Trail Parameters
+input double HybridNetLotsThreshold = 3.0;  // Net lots threshold to switch to group close (for HYBRID_BALANCED)
+input double HybridGLOPercentage = 0.4;     // GLO ratio threshold to switch (0.4 = 40% of orders in loss)
+input double HybridBalanceFactor = 2.0;     // Imbalance factor for smart switching (buyLots/sellLots or vice versa)
+input int    HybridCountDiffThreshold = 5;  // Order count difference threshold (for HYBRID_COUNT_DIFF)
 
 // Adaptive Gap
 input bool   UseAdaptiveGap = true;       // Use ATR-based adaptive gap
@@ -86,8 +96,16 @@ double MaxGapPoints = GapInPoints*1.10;        // Maximum gap points
 
 // Display Settings
 input bool   ShowLabels = true;         // Show chart labels (disable for performance)
+input bool   ShowOrderLabels = false;   // Show order open/close labels on chart
+input bool   ShowNextLevelLines = false; // Show next level lines on chart
 input double MaxLossVlineThreshold = 100.0;  // Min loss to show max loss vline (0 = always show)
 input int    VlineOffsetCandles = 10;   // Current profit vline offset in candles from current time
+
+// Button Initial States
+input bool   InitialStopNewOrders = false; // Initial state for Stop New Orders button
+input bool   InitialNoWork = false;        // Initial state for No Work button
+input int    InitialSingleTrailMode = 2;   // Initial Single Trail Mode (0=Tight, 1=Normal, 2=Loose)
+input int    InitialTotalTrailMode = 2;    // Initial Total Trail Mode (0=Tight, 1=Normal, 2=Loose)
 
 // Order Placement Settings
 input int    OrderPlacementDelayMs = 0;  // Delay between orders in milliseconds (0 = no delay)
@@ -138,13 +156,18 @@ bool g_noWork = false;           // If true: no new orders, no closing, only dis
 datetime g_closeAllClickTime = 0; // Track first click time for double-click protection
 datetime g_stopNewOrdersClickTime = 0; // Track first click time for Stop New Orders
 datetime g_noWorkClickTime = 0;   // Track first click time for No Work
+datetime g_resetCountersClickTime = 0; // Track first click time for Reset Counters (triple-click)
+int g_resetCountersClickCount = 0; // Count clicks for Reset Counters button
 bool g_pendingStopNewOrders = false; // Pending action after next close-all
 bool g_pendingNoWork = false;    // Pending action after next close-all
 bool g_showLabels = true;        // If true: show all labels, if false: hide for performance
-bool g_showNextLevelLines = true; // If true: show and calculate next level lines (toggle via button)
-int  g_currentDebugLevel = 3;    // Current debug level (modifiable at runtime, initialized from DebugLevel input)
-int  g_singleTrailMode = 1;      // Single trail sensitivity: 0=Tight, 1=Normal, 2=Loose
-int  g_totalTrailMode = 1;       // Total trail sensitivity: 0=Tight, 1=Normal, 2=Loose
+bool g_showNextLevelLines = false; // If true: show and calculate next level lines (toggle via button)
+bool g_showOrderLabels = false;  // If true: show order open/close labels on chart
+int  g_currentDebugLevel = 0;    // Current debug level (modifiable at runtime, initialized from DebugLevel input)
+int  g_singleTrailMode = 2;      // Single trail sensitivity: 0=Tight, 1=Normal, 2=Loose
+int  g_totalTrailMode = 2;       // Total trail sensitivity: 0=Tight, 1=Normal, 2=Loose
+int  g_currentTrailMethod = 9;   // Current trail method (modifiable at runtime, initialized from SingleTrailMethod input)
+string g_activeSelectionPanel = ""; // Track active selection panel (empty = none active)
 
 // Total Trailing State
 bool   g_trailActive = false;
@@ -478,27 +501,12 @@ void CreateButtons() {
    int topMargin = BtnYDistance;     // Use input parameter
    int verticalGap = 5;              // Gap between buttons
    
-   // Button 1: Stop New Orders
-   string btn1Name = "BtnStopNewOrders";
-   if(ObjectFind(0, btn1Name) < 0) {
-      ObjectCreate(0, btn1Name, OBJ_BUTTON, 0, 0, 0);
-      ObjectSetInteger(0, btn1Name, OBJPROP_XDISTANCE, rightMargin);
-      ObjectSetInteger(0, btn1Name, OBJPROP_YDISTANCE, topMargin);
-      ObjectSetInteger(0, btn1Name, OBJPROP_XSIZE, buttonWidth);
-      ObjectSetInteger(0, btn1Name, OBJPROP_YSIZE, buttonHeight);
-      ObjectSetInteger(0, btn1Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
-      ObjectSetInteger(0, btn1Name, OBJPROP_FONTSIZE, 8);
-      ObjectSetString(0, btn1Name, OBJPROP_FONT, "Arial Bold");
-      ObjectSetInteger(0, btn1Name, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, btn1Name, OBJPROP_HIDDEN, false);
-   }
-   
-   // Button 2: No Work Mode
+   // Button 1: No Work Mode (CRITICAL)
    string btn2Name = "BtnNoWork";
    if(ObjectFind(0, btn2Name) < 0) {
       ObjectCreate(0, btn2Name, OBJ_BUTTON, 0, 0, 0);
       ObjectSetInteger(0, btn2Name, OBJPROP_XDISTANCE, rightMargin);
-      ObjectSetInteger(0, btn2Name, OBJPROP_YDISTANCE, topMargin + buttonHeight + verticalGap);
+      ObjectSetInteger(0, btn2Name, OBJPROP_YDISTANCE, topMargin);
       ObjectSetInteger(0, btn2Name, OBJPROP_XSIZE, buttonWidth);
       ObjectSetInteger(0, btn2Name, OBJPROP_YSIZE, buttonHeight);
       ObjectSetInteger(0, btn2Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
@@ -508,7 +516,22 @@ void CreateButtons() {
       ObjectSetInteger(0, btn2Name, OBJPROP_HIDDEN, false);
    }
    
-   // Button 3: Close All
+   // Button 2: Stop New Orders (CRITICAL)
+   string btn1Name = "BtnStopNewOrders";
+   if(ObjectFind(0, btn1Name) < 0) {
+      ObjectCreate(0, btn1Name, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, btn1Name, OBJPROP_XDISTANCE, rightMargin);
+      ObjectSetInteger(0, btn1Name, OBJPROP_YDISTANCE, topMargin + buttonHeight + verticalGap);
+      ObjectSetInteger(0, btn1Name, OBJPROP_XSIZE, buttonWidth);
+      ObjectSetInteger(0, btn1Name, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetInteger(0, btn1Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetInteger(0, btn1Name, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, btn1Name, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, btn1Name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, btn1Name, OBJPROP_HIDDEN, false);
+   }
+   
+   // Button 3: Close All (CRITICAL)
    string btn3Name = "BtnCloseAll";
    if(ObjectFind(0, btn3Name) < 0) {
       ObjectCreate(0, btn3Name, OBJ_BUTTON, 0, 0, 0);
@@ -523,12 +546,30 @@ void CreateButtons() {
       ObjectSetInteger(0, btn3Name, OBJPROP_HIDDEN, false);
    }
    
-   // Button 4: Toggle Labels
+   // Button 4: Reset Counters (CRITICAL)
+   string btn12Name = "BtnResetCounters";
+   if(ObjectFind(0, btn12Name) < 0) {
+      ObjectCreate(0, btn12Name, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, btn12Name, OBJPROP_XDISTANCE, rightMargin);
+      ObjectSetInteger(0, btn12Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 3);
+      ObjectSetInteger(0, btn12Name, OBJPROP_XSIZE, buttonWidth);
+      ObjectSetInteger(0, btn12Name, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetInteger(0, btn12Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetString(0, btn12Name, OBJPROP_TEXT, "Reset (3x click)");
+      ObjectSetInteger(0, btn12Name, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, btn12Name, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, btn12Name, OBJPROP_BGCOLOR, clrDarkOrange);
+      ObjectSetInteger(0, btn12Name, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btn12Name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, btn12Name, OBJPROP_HIDDEN, false);
+   }
+   
+   // Button 5: Toggle Labels (SHOW)
    string btn4Name = "BtnToggleLabels";
    if(ObjectFind(0, btn4Name) < 0) {
       ObjectCreate(0, btn4Name, OBJ_BUTTON, 0, 0, 0);
       ObjectSetInteger(0, btn4Name, OBJPROP_XDISTANCE, rightMargin);
-      ObjectSetInteger(0, btn4Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 3);
+      ObjectSetInteger(0, btn4Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 4);
       ObjectSetInteger(0, btn4Name, OBJPROP_XSIZE, buttonWidth);
       ObjectSetInteger(0, btn4Name, OBJPROP_YSIZE, buttonHeight);
       ObjectSetInteger(0, btn4Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
@@ -538,12 +579,12 @@ void CreateButtons() {
       ObjectSetInteger(0, btn4Name, OBJPROP_HIDDEN, false);
    }
    
-   // Button 5: Toggle Next Level Lines
+   // Button 6: Toggle Next Level Lines (SHOW)
    string btn5Name = "BtnToggleNextLines";
    if(ObjectFind(0, btn5Name) < 0) {
       ObjectCreate(0, btn5Name, OBJ_BUTTON, 0, 0, 0);
       ObjectSetInteger(0, btn5Name, OBJPROP_XDISTANCE, rightMargin);
-      ObjectSetInteger(0, btn5Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 4);
+      ObjectSetInteger(0, btn5Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 5);
       ObjectSetInteger(0, btn5Name, OBJPROP_XSIZE, buttonWidth);
       ObjectSetInteger(0, btn5Name, OBJPROP_YSIZE, buttonHeight);
       ObjectSetInteger(0, btn5Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
@@ -553,48 +594,48 @@ void CreateButtons() {
       ObjectSetInteger(0, btn5Name, OBJPROP_HIDDEN, false);
    }
    
-   // Button 6: Print Stats
-   string btn6Name = "BtnPrintStats";
-   if(ObjectFind(0, btn6Name) < 0) {
-      ObjectCreate(0, btn6Name, OBJ_BUTTON, 0, 0, 0);
-      ObjectSetInteger(0, btn6Name, OBJPROP_XDISTANCE, rightMargin);
-      ObjectSetInteger(0, btn6Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 5);
-      ObjectSetInteger(0, btn6Name, OBJPROP_XSIZE, buttonWidth);
-      ObjectSetInteger(0, btn6Name, OBJPROP_YSIZE, buttonHeight);
-      ObjectSetInteger(0, btn6Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
-      ObjectSetString(0, btn6Name, OBJPROP_TEXT, "Print Stats");
-      ObjectSetInteger(0, btn6Name, OBJPROP_FONTSIZE, 8);
-      ObjectSetString(0, btn6Name, OBJPROP_FONT, "Arial Bold");
-      ObjectSetInteger(0, btn6Name, OBJPROP_BGCOLOR, clrDarkBlue);
-      ObjectSetInteger(0, btn6Name, OBJPROP_COLOR, clrWhite);
-      ObjectSetInteger(0, btn6Name, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, btn6Name, OBJPROP_HIDDEN, false);
+   // Button 7: Toggle Order Labels (SHOW)
+   string btn11Name = "BtnOrderLabels";
+   if(ObjectFind(0, btn11Name) < 0) {
+      ObjectCreate(0, btn11Name, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, btn11Name, OBJPROP_XDISTANCE, rightMargin);
+      ObjectSetInteger(0, btn11Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 6);
+      ObjectSetInteger(0, btn11Name, OBJPROP_XSIZE, buttonWidth);
+      ObjectSetInteger(0, btn11Name, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetInteger(0, btn11Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetString(0, btn11Name, OBJPROP_TEXT, "Order Labels: ON");
+      ObjectSetInteger(0, btn11Name, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, btn11Name, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, btn11Name, OBJPROP_BGCOLOR, clrDarkGreen);
+      ObjectSetInteger(0, btn11Name, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btn11Name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, btn11Name, OBJPROP_HIDDEN, false);
    }
    
-   // Button 7: Debug Level
-   string btn7Name = "BtnDebugLevel";
-   if(ObjectFind(0, btn7Name) < 0) {
-      ObjectCreate(0, btn7Name, OBJ_BUTTON, 0, 0, 0);
-      ObjectSetInteger(0, btn7Name, OBJPROP_XDISTANCE, rightMargin);
-      ObjectSetInteger(0, btn7Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 6);
-      ObjectSetInteger(0, btn7Name, OBJPROP_XSIZE, buttonWidth);
-      ObjectSetInteger(0, btn7Name, OBJPROP_YSIZE, buttonHeight);
-      ObjectSetInteger(0, btn7Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
-      ObjectSetString(0, btn7Name, OBJPROP_TEXT, "Debug: 3");
-      ObjectSetInteger(0, btn7Name, OBJPROP_FONTSIZE, 8);
-      ObjectSetString(0, btn7Name, OBJPROP_FONT, "Arial Bold");
-      ObjectSetInteger(0, btn7Name, OBJPROP_BGCOLOR, clrDarkGreen);
-      ObjectSetInteger(0, btn7Name, OBJPROP_COLOR, clrWhite);
-      ObjectSetInteger(0, btn7Name, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, btn7Name, OBJPROP_HIDDEN, false);
+   // Button 8: Trail Method Strategy (TRAIL)
+   string btn10Name = "BtnTrailMethod";
+   if(ObjectFind(0, btn10Name) < 0) {
+      ObjectCreate(0, btn10Name, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, btn10Name, OBJPROP_XDISTANCE, rightMargin);
+      ObjectSetInteger(0, btn10Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 7);
+      ObjectSetInteger(0, btn10Name, OBJPROP_XSIZE, buttonWidth);
+      ObjectSetInteger(0, btn10Name, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetInteger(0, btn10Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetString(0, btn10Name, OBJPROP_TEXT, "Method: SAMETYPE");
+      ObjectSetInteger(0, btn10Name, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, btn10Name, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, btn10Name, OBJPROP_BGCOLOR, clrDarkSlateGray);
+      ObjectSetInteger(0, btn10Name, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btn10Name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, btn10Name, OBJPROP_HIDDEN, false);
    }
    
-   // Button 8: Single Trail Mode
+   // Button 9: Single Trail Mode (TRAIL)
    string btn8Name = "BtnSingleTrail";
    if(ObjectFind(0, btn8Name) < 0) {
       ObjectCreate(0, btn8Name, OBJ_BUTTON, 0, 0, 0);
       ObjectSetInteger(0, btn8Name, OBJPROP_XDISTANCE, rightMargin);
-      ObjectSetInteger(0, btn8Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 7);
+      ObjectSetInteger(0, btn8Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 8);
       ObjectSetInteger(0, btn8Name, OBJPROP_XSIZE, buttonWidth);
       ObjectSetInteger(0, btn8Name, OBJPROP_YSIZE, buttonHeight);
       ObjectSetInteger(0, btn8Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
@@ -607,12 +648,12 @@ void CreateButtons() {
       ObjectSetInteger(0, btn8Name, OBJPROP_HIDDEN, false);
    }
    
-   // Button 9: Total Trail Mode
+   // Button 10: Total Trail Mode (TRAIL)
    string btn9Name = "BtnTotalTrail";
    if(ObjectFind(0, btn9Name) < 0) {
       ObjectCreate(0, btn9Name, OBJ_BUTTON, 0, 0, 0);
       ObjectSetInteger(0, btn9Name, OBJPROP_XDISTANCE, rightMargin);
-      ObjectSetInteger(0, btn9Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 8);
+      ObjectSetInteger(0, btn9Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 9);
       ObjectSetInteger(0, btn9Name, OBJPROP_XSIZE, buttonWidth);
       ObjectSetInteger(0, btn9Name, OBJPROP_YSIZE, buttonHeight);
       ObjectSetInteger(0, btn9Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
@@ -623,6 +664,42 @@ void CreateButtons() {
       ObjectSetInteger(0, btn9Name, OBJPROP_COLOR, clrWhite);
       ObjectSetInteger(0, btn9Name, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, btn9Name, OBJPROP_HIDDEN, false);
+   }
+   
+   // Button 11: Debug Level (LESS CRITICAL)
+   string btn7Name = "BtnDebugLevel";
+   if(ObjectFind(0, btn7Name) < 0) {
+      ObjectCreate(0, btn7Name, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, btn7Name, OBJPROP_XDISTANCE, rightMargin);
+      ObjectSetInteger(0, btn7Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 10);
+      ObjectSetInteger(0, btn7Name, OBJPROP_XSIZE, buttonWidth);
+      ObjectSetInteger(0, btn7Name, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetInteger(0, btn7Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetString(0, btn7Name, OBJPROP_TEXT, "Debug: 3");
+      ObjectSetInteger(0, btn7Name, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, btn7Name, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, btn7Name, OBJPROP_BGCOLOR, clrDarkGreen);
+      ObjectSetInteger(0, btn7Name, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btn7Name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, btn7Name, OBJPROP_HIDDEN, false);
+   }
+   
+   // Button 12: Print Stats (LESS CRITICAL)
+   string btn6Name = "BtnPrintStats";
+   if(ObjectFind(0, btn6Name) < 0) {
+      ObjectCreate(0, btn6Name, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, btn6Name, OBJPROP_XDISTANCE, rightMargin);
+      ObjectSetInteger(0, btn6Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 11);
+      ObjectSetInteger(0, btn6Name, OBJPROP_XSIZE, buttonWidth);
+      ObjectSetInteger(0, btn6Name, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetInteger(0, btn6Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetString(0, btn6Name, OBJPROP_TEXT, "Print Stats");
+      ObjectSetInteger(0, btn6Name, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, btn6Name, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, btn6Name, OBJPROP_BGCOLOR, clrDarkBlue);
+      ObjectSetInteger(0, btn6Name, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btn6Name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, btn6Name, OBJPROP_HIDDEN, false);
    }
    
    UpdateButtonStates();
@@ -790,7 +867,404 @@ void UpdateButtonStates() {
    ObjectSetInteger(0, btn9Name, OBJPROP_COLOR, clrWhite);
    ObjectSetInteger(0, btn9Name, OBJPROP_STATE, false);
    
+   // Update Button 10: Trail Method Strategy
+   string btn10Name = "BtnTrailMethod";
+   string methodText = "";
+   color methodColor = clrDarkSlateGray;
+   
+   switch(g_currentTrailMethod) {
+      case SINGLE_TRAIL_NORMAL:
+         methodText = "Method: NORMAL";
+         methodColor = clrDarkSlateGray;
+         break;
+      case SINGLE_TRAIL_CLOSETOGETHER:
+         methodText = "Method: ANYSIDE";
+         methodColor = clrDarkOliveGreen;
+         break;
+      case SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE:
+         methodText = "Method: SAMETYPE";
+         methodColor = clrDarkCyan;
+         break;
+      case SINGLE_TRAIL_DYNAMIC:
+         methodText = "Method: DYNAMIC";
+         methodColor = clrDarkMagenta;
+         break;
+      case SINGLE_TRAIL_DYNAMIC_SAMETYPE:
+         methodText = "Method: DYN-SAME";
+         methodColor = clrDarkViolet;
+         break;
+      case SINGLE_TRAIL_DYNAMIC_ANYSIDE:
+         methodText = "Method: DYN-ANY";
+         methodColor = clrIndigo;
+         break;
+      case SINGLE_TRAIL_HYBRID_BALANCED:
+         methodText = "Method: HYB-BAL";
+         methodColor = clrDarkOrange;
+         break;
+      case SINGLE_TRAIL_HYBRID_ADAPTIVE:
+         methodText = "Method: HYB-ADP";
+         methodColor = clrSaddleBrown;
+         break;
+      case SINGLE_TRAIL_HYBRID_SMART:
+         methodText = "Method: HYB-SMART";
+         methodColor = clrDarkGoldenrod;
+         break;
+      case SINGLE_TRAIL_HYBRID_COUNT_DIFF:
+         methodText = "Method: HYB-CNT";
+         methodColor = clrMaroon;
+         break;
+      default:
+         methodText = StringFormat("Method: %d", g_currentTrailMethod);
+         methodColor = clrDarkGray;
+         break;
+   }
+   
+   ObjectSetString(0, btn10Name, OBJPROP_TEXT, methodText);
+   ObjectSetInteger(0, btn10Name, OBJPROP_BGCOLOR, methodColor);
+   ObjectSetInteger(0, btn10Name, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, btn10Name, OBJPROP_STATE, false);
+   
+   // Update Button 11: Order Labels
+   string btn11Name = "BtnOrderLabels";
+   if(g_showOrderLabels) {
+      ObjectSetString(0, btn11Name, OBJPROP_TEXT, "Order Labels: ON");
+      ObjectSetInteger(0, btn11Name, OBJPROP_BGCOLOR, clrDarkGreen);
+   } else {
+      ObjectSetString(0, btn11Name, OBJPROP_TEXT, "Order Labels: OFF");
+      ObjectSetInteger(0, btn11Name, OBJPROP_BGCOLOR, clrDarkGray);
+   }
+   ObjectSetInteger(0, btn11Name, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, btn11Name, OBJPROP_STATE, false);
+   
+   // Update Button 12: Reset Counters (always same appearance)
+   string btn12Name = "BtnResetCounters";
+   ObjectSetString(0, btn12Name, OBJPROP_TEXT, "Reset (3x click)");
+   ObjectSetInteger(0, btn12Name, OBJPROP_BGCOLOR, clrDarkOrange);
+   ObjectSetInteger(0, btn12Name, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, btn12Name, OBJPROP_STATE, false);
+   
    ChartRedraw(0);
+}
+
+//============================= SELECTION PANEL FUNCTIONS ==========//
+void CreateSelectionPanel(string panelType) {
+   // Remove any existing selection panel first
+   DestroySelectionPanel();
+   
+   // Get chart dimensions
+   long chartWidth = ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   long chartHeight = ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+   
+   int buttonWidth = 150;
+   int buttonHeight = 30;
+   int rightMargin = BtnXDistance;
+   int topMargin = BtnYDistance;
+   int verticalGap = 5;
+   
+   // Panel background (semi-transparent dark background)
+   string bgName = "SelectionPanelBG";
+   ObjectCreate(0, bgName, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, bgName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+   ObjectSetInteger(0, bgName, OBJPROP_XDISTANCE, rightMargin + buttonWidth + 10);
+   ObjectSetInteger(0, bgName, OBJPROP_YDISTANCE, topMargin);
+   ObjectSetInteger(0, bgName, OBJPROP_XSIZE, 180);
+   ObjectSetInteger(0, bgName, OBJPROP_BGCOLOR, clrBlack);
+   ObjectSetInteger(0, bgName, OBJPROP_BACK, false);
+   ObjectSetInteger(0, bgName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, bgName, OBJPROP_HIDDEN, true);
+   
+   int yOffset = 10;
+   
+   if(panelType == "DebugLevel") {
+      g_activeSelectionPanel = "DebugLevel";
+      ObjectSetInteger(0, bgName, OBJPROP_YSIZE, 4 * (buttonHeight + 5) + 20);
+      
+      string options[] = {"OFF", "CRITICAL", "INFO", "VERBOSE"};
+      color colors[] = {clrDarkGray, clrDarkRed, clrDarkOrange, clrDarkGreen};
+      
+      for(int i = 0; i < 4; i++) {
+         string btnName = StringFormat("SelectDebug_%d", i);
+         ObjectCreate(0, btnName, OBJ_BUTTON, 0, 0, 0);
+         ObjectSetInteger(0, btnName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+         ObjectSetInteger(0, btnName, OBJPROP_XDISTANCE, rightMargin + buttonWidth + 20);
+         ObjectSetInteger(0, btnName, OBJPROP_YDISTANCE, topMargin + yOffset);
+         ObjectSetInteger(0, btnName, OBJPROP_XSIZE, 160);
+         ObjectSetInteger(0, btnName, OBJPROP_YSIZE, buttonHeight);
+         ObjectSetString(0, btnName, OBJPROP_TEXT, options[i]);
+         ObjectSetInteger(0, btnName, OBJPROP_BGCOLOR, colors[i]);
+         ObjectSetInteger(0, btnName, OBJPROP_COLOR, clrWhite);
+         ObjectSetInteger(0, btnName, OBJPROP_FONTSIZE, 10);
+         ObjectSetInteger(0, btnName, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, btnName, OBJPROP_HIDDEN, true);
+         yOffset += buttonHeight + 5;
+      }
+   }
+   else if(panelType == "SingleTrail") {
+      g_activeSelectionPanel = "SingleTrail";
+      ObjectSetInteger(0, bgName, OBJPROP_YSIZE, 3 * (buttonHeight + 5) + 20);
+      
+      string options[] = {"TIGHT (0.5x)", "NORMAL (1.0x)", "LOOSE (2.0x)"};
+      color colors[] = {clrDarkRed, clrDarkBlue, clrDarkGreen};
+      
+      for(int i = 0; i < 3; i++) {
+         string btnName = StringFormat("SelectSTrail_%d", i);
+         ObjectCreate(0, btnName, OBJ_BUTTON, 0, 0, 0);
+         ObjectSetInteger(0, btnName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+         ObjectSetInteger(0, btnName, OBJPROP_XDISTANCE, rightMargin + buttonWidth + 20);
+         ObjectSetInteger(0, btnName, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) + yOffset);
+         ObjectSetInteger(0, btnName, OBJPROP_XSIZE, 160);
+         ObjectSetInteger(0, btnName, OBJPROP_YSIZE, buttonHeight);
+         ObjectSetString(0, btnName, OBJPROP_TEXT, options[i]);
+         ObjectSetInteger(0, btnName, OBJPROP_BGCOLOR, colors[i]);
+         ObjectSetInteger(0, btnName, OBJPROP_COLOR, clrWhite);
+         ObjectSetInteger(0, btnName, OBJPROP_FONTSIZE, 10);
+         ObjectSetInteger(0, btnName, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, btnName, OBJPROP_HIDDEN, true);
+         yOffset += buttonHeight + 5;
+      }
+   }
+   else if(panelType == "TotalTrail") {
+      g_activeSelectionPanel = "TotalTrail";
+      ObjectSetInteger(0, bgName, OBJPROP_YSIZE, 3 * (buttonHeight + 5) + 20);
+      
+      string options[] = {"TIGHT (0.5x)", "NORMAL (1.0x)", "LOOSE (2.0x)"};
+      color colors[] = {clrDarkRed, clrDarkBlue, clrDarkGreen};
+      
+      for(int i = 0; i < 3; i++) {
+         string btnName = StringFormat("SelectTTrail_%d", i);
+         ObjectCreate(0, btnName, OBJ_BUTTON, 0, 0, 0);
+         ObjectSetInteger(0, btnName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+         ObjectSetInteger(0, btnName, OBJPROP_XDISTANCE, rightMargin + buttonWidth + 20);
+         ObjectSetInteger(0, btnName, OBJPROP_YDISTANCE, topMargin + 2 * (buttonHeight + verticalGap) + yOffset);
+         ObjectSetInteger(0, btnName, OBJPROP_XSIZE, 160);
+         ObjectSetInteger(0, btnName, OBJPROP_YSIZE, buttonHeight);
+         ObjectSetString(0, btnName, OBJPROP_TEXT, options[i]);
+         ObjectSetInteger(0, btnName, OBJPROP_BGCOLOR, colors[i]);
+         ObjectSetInteger(0, btnName, OBJPROP_COLOR, clrWhite);
+         ObjectSetInteger(0, btnName, OBJPROP_FONTSIZE, 10);
+         ObjectSetInteger(0, btnName, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, btnName, OBJPROP_HIDDEN, true);
+         yOffset += buttonHeight + 5;
+      }
+   }
+   else if(panelType == "TrailMethod") {
+      g_activeSelectionPanel = "TrailMethod";
+      ObjectSetInteger(0, bgName, OBJPROP_YSIZE, 10 * (buttonHeight + 5) + 20);
+      
+      string options[] = {
+         "NORMAL", "ANYSIDE", "SAMETYPE", "DYNAMIC", "DYN-SAME",
+         "DYN-ANY", "HYB-BAL", "HYB-ADP", "HYB-SMART", "HYB-CNT"
+      };
+      color colors[] = {
+         clrDarkSlateGray, clrDarkOliveGreen, clrDarkCyan, clrDarkMagenta, clrDarkViolet,
+         clrIndigo, clrDarkOrange, clrSaddleBrown, clrDarkGoldenrod, clrMaroon
+      };
+      
+      for(int i = 0; i < 10; i++) {
+         string btnName = StringFormat("SelectMethod_%d", i);
+         ObjectCreate(0, btnName, OBJ_BUTTON, 0, 0, 0);
+         ObjectSetInteger(0, btnName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+         ObjectSetInteger(0, btnName, OBJPROP_XDISTANCE, rightMargin + buttonWidth + 20);
+         ObjectSetInteger(0, btnName, OBJPROP_YDISTANCE, topMargin + 3 * (buttonHeight + verticalGap) + yOffset);
+         ObjectSetInteger(0, btnName, OBJPROP_XSIZE, 160);
+         ObjectSetInteger(0, btnName, OBJPROP_YSIZE, buttonHeight);
+         ObjectSetString(0, btnName, OBJPROP_TEXT, options[i]);
+         ObjectSetInteger(0, btnName, OBJPROP_BGCOLOR, colors[i]);
+         ObjectSetInteger(0, btnName, OBJPROP_COLOR, clrWhite);
+         ObjectSetInteger(0, btnName, OBJPROP_FONTSIZE, 10);
+         ObjectSetInteger(0, btnName, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, btnName, OBJPROP_HIDDEN, true);
+         yOffset += buttonHeight + 5;
+      }
+   }
+   
+   ChartRedraw(0);
+}
+
+void DestroySelectionPanel() {
+   if(g_activeSelectionPanel == "") return;
+   
+   // Delete background
+   ObjectDelete(0, "SelectionPanelBG");
+   
+   // Delete all selection buttons based on panel type
+   if(g_activeSelectionPanel == "DebugLevel") {
+      for(int i = 0; i < 4; i++) {
+         ObjectDelete(0, StringFormat("SelectDebug_%d", i));
+      }
+   }
+   else if(g_activeSelectionPanel == "SingleTrail") {
+      for(int i = 0; i < 3; i++) {
+         ObjectDelete(0, StringFormat("SelectSTrail_%d", i));
+      }
+   }
+   else if(g_activeSelectionPanel == "TotalTrail") {
+      for(int i = 0; i < 3; i++) {
+         ObjectDelete(0, StringFormat("SelectTTrail_%d", i));
+      }
+   }
+   else if(g_activeSelectionPanel == "TrailMethod") {
+      for(int i = 0; i < 10; i++) {
+         ObjectDelete(0, StringFormat("SelectMethod_%d", i));
+      }
+   }
+   
+   g_activeSelectionPanel = "";
+   ChartRedraw(0);
+}
+
+//============================= ORDER LABEL FUNCTIONS ==============//
+void CreateOpenOrderLabel(ulong ticket, int level, int orderType, double lotSize, double price, datetime time) {
+   if(!g_showOrderLabels) return;
+   
+   string typeStr = (orderType == POSITION_TYPE_BUY) ? "B" : "S";
+   string labelName = StringFormat("OrderOpen_%I64u", ticket);
+   string labelText = StringFormat("L%d %s %.2f", level, typeStr, lotSize);
+   
+   if(ObjectFind(0, labelName) < 0) {
+      ObjectCreate(0, labelName, OBJ_TEXT, 0, time, price);
+      ObjectSetString(0, labelName, OBJPROP_TEXT, labelText);
+      ObjectSetInteger(0, labelName, OBJPROP_COLOR, clrLightBlue);
+      ObjectSetInteger(0, labelName, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, labelName, OBJPROP_FONT, "Arial");
+      ObjectSetInteger(0, labelName, OBJPROP_ANCHOR, ANCHOR_LEFT);
+      ObjectSetInteger(0, labelName, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, labelName, OBJPROP_HIDDEN, true);
+      ObjectSetInteger(0, labelName, OBJPROP_BACK, false);
+      
+      Log(3, StringFormat("[LABEL-OPEN] Created label %s at L%d %s %.2f", labelName, level, typeStr, lotSize));
+   }
+}
+
+void CreateCloseOrderLabel(ulong ticket, int level, int orderType, double profit, double price, datetime time) {
+   if(!g_showOrderLabels) return;
+   
+   string typeStr = (orderType == POSITION_TYPE_BUY) ? "B" : "S";
+   string labelName = StringFormat("OrderClose_%I64u", ticket);
+   string labelText = StringFormat("L%d %s %s%.0f", level, typeStr, profit >= 0 ? "+" : "", profit);
+   color labelColor = profit >= 0 ? clrLime : clrRed;
+   
+   if(ObjectFind(0, labelName) < 0) {
+      ObjectCreate(0, labelName, OBJ_TEXT, 0, time, price);
+      ObjectSetString(0, labelName, OBJPROP_TEXT, labelText);
+      ObjectSetInteger(0, labelName, OBJPROP_COLOR, labelColor);
+      ObjectSetInteger(0, labelName, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, labelName, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, labelName, OBJPROP_ANCHOR, ANCHOR_RIGHT);
+      ObjectSetInteger(0, labelName, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, labelName, OBJPROP_HIDDEN, true);
+      ObjectSetInteger(0, labelName, OBJPROP_BACK, false);
+      
+      Log(3, StringFormat("[LABEL-CLOSE] Created label %s at L%d %s %.0f", labelName, level, typeStr, profit));
+   }
+}
+
+void HideAllOrderLabels() {
+   // Hide all order open labels
+   for(int i = ObjectsTotal(0, 0, OBJ_TEXT) - 1; i >= 0; i--) {
+      string objName = ObjectName(0, i, 0, OBJ_TEXT);
+      if(StringFind(objName, "OrderOpen_") >= 0 || StringFind(objName, "OrderClose_") >= 0) {
+         ObjectDelete(0, objName);
+      }
+   }
+   Log(2, "[LABEL-HIDE] All order labels hidden");
+}
+
+void ShowAllOrderLabels() {
+   // Recreate labels for existing positions (open labels only, close labels are created on close)
+   for(int i = 0; i < g_orderCount; i++) {
+      if(g_orders[i].isValid) {
+         CreateOpenOrderLabel(
+            g_orders[i].ticket,
+            g_orders[i].level,
+            g_orders[i].type,
+            g_orders[i].lotSize,
+            g_orders[i].openPrice,
+            g_orders[i].openTime
+         );
+      }
+   }
+   Log(2, StringFormat("[LABEL-SHOW] Recreated %d order open labels", g_orderCount));
+}
+
+// Helper function to create close label before closing position
+void CreateCloseLabelBeforeClose(ulong ticket) {
+   if(!g_showOrderLabels) return;
+   
+   if(!PositionSelectByTicket(ticket)) return;
+   
+   // Get order info from tracking array
+   int level = 0;
+   int orderType = 0;
+   for(int i = 0; i < g_orderCount; i++) {
+      if(g_orders[i].ticket == ticket && g_orders[i].isValid) {
+         level = g_orders[i].level;
+         orderType = g_orders[i].type;
+         break;
+      }
+   }
+   
+   if(level == 0) return; // Not found in tracking
+   
+   double profit = PositionGetDouble(POSITION_PROFIT);
+   double closePrice = (orderType == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   datetime closeTime = TimeCurrent();
+   
+   CreateCloseOrderLabel(ticket, level, orderType, profit, closePrice, closeTime);
+}
+
+//============================= RESET ALL COUNTERS =================//
+void ResetAllCounters() {
+   Log(1, "========== RESETTING ALL COUNTERS ==========");
+   
+   double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+   
+   // Reset equity tracking
+   g_startingEquity = currentEquity;
+   g_lastCloseEquity = currentEquity;
+   g_lastDayEquity = currentEquity;
+   
+   // Reset max/min trackers
+   g_maxLossCycle = 0.0;
+   g_maxProfitCycle = 0.0;
+   g_overallMaxProfit = 0.0;
+   g_overallMaxLoss = 0.0;
+   g_maxLotsCycle = 0.0;
+   g_overallMaxLotSize = 0.0;
+   g_maxSpread = 0.0;
+   g_lastMaxLossVline = 0.0;
+   g_maxGLOOverall = 0;
+   
+   // Reset history arrays
+   ArrayInitialize(g_last5Closes, 0.0);
+   ArrayInitialize(g_dailyProfits, 0.0);
+   ArrayInitialize(g_historySymbolDaily, 0.0);
+   ArrayInitialize(g_historyOverallDaily, 0.0);
+   g_closeCount = 0;
+   g_lastDay = -1;
+   g_dayIndex = 0;
+   
+   // Reset trailing state
+   g_trailActive = false;
+   g_trailStart = 0.0;
+   g_trailGap = 0.0;
+   g_trailPeak = 0.0;
+   g_trailFloor = 0.0;
+   
+   // Reset single trail state
+   ArrayResize(g_trails, 0);
+   
+   // Reset group trail state
+   g_groupTrail.active = false;
+   g_groupTrail.peakProfit = 0.0;
+   g_groupTrail.threshold = 0.0;
+   g_groupTrail.gap = 0.0;
+   g_groupTrail.farthestBuyTicket = 0;
+   g_groupTrail.farthestSellTicket = 0;
+   g_groupTrail.lastLogTick = 0;
+   
+   Log(1, StringFormat("All counters reset. New starting equity: %.2f", g_startingEquity));
+   Log(1, "===========================================");
 }
 
 //============================= RESTORE STATE FROM POSITIONS =======//
@@ -1382,12 +1856,25 @@ bool ExecuteOrder(int orderType, double lotSize, string comment = "") {
          string typeStr = (orderType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
          datetime currentTime = TimeCurrent();
          
+         // Get actual execution price from position
+         double price = 0.0;
+         datetime openTime = currentTime;
+         if(PositionSelectByTicket(ticket)) {
+            price = PositionGetDouble(POSITION_PRICE_OPEN);
+            openTime = (datetime)PositionGetInteger(POSITION_TIME);
+         } else {
+            // Fallback to current market price if position not found
+            price = (orderType == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         }
+         
          // Add to tracking array
-         double price = (orderType == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
          AddOrderToTracking(ticket, orderType, orderLevel, price, lotSize);
          
-         Log(2, StringFormat("[ORDER-RECORDED] %s L%d @ %s | Lot=%.2f Ticket=%d", 
-             typeStr, orderLevel, TimeToString(currentTime, TIME_SECONDS), lotSize, ticket));
+         // Create open order label with actual execution price
+         CreateOpenOrderLabel(ticket, orderLevel, orderType, lotSize, price, openTime);
+         
+         Log(2, StringFormat("[ORDER-RECORDED] %s L%d @ %s | Lot=%.2f Ticket=%d Price=%.5f", 
+             typeStr, orderLevel, TimeToString(currentTime, TIME_SECONDS), lotSize, ticket, price));
       }
       
       // Apply delay if configured
@@ -1443,8 +1930,21 @@ bool ExecuteOrder(int orderType, double lotSize, string comment = "") {
          
          // Add to tracking array
          if(orderLevel != 0) {
-            double price = (orderType == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            // Get actual execution price from position
+            double price = 0.0;
+            datetime openTime = TimeCurrent();
+            if(PositionSelectByTicket(ticket)) {
+               price = PositionGetDouble(POSITION_PRICE_OPEN);
+               openTime = (datetime)PositionGetInteger(POSITION_TIME);
+            } else {
+               // Fallback to current market price if position not found
+               price = (orderType == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            }
+            
             AddOrderToTracking(ticket, orderType, orderLevel, price, currentLot);
+            
+            // Create open order label for each split order with actual execution price
+            CreateOpenOrderLabel(ticket, orderLevel, orderType, currentLot, price, openTime);
             
             if(!firstOrderPlaced) {
                string typeStr = (orderType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
@@ -2354,6 +2854,7 @@ void PerformCloseAll(string reason = "Manual") {
       if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
       if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
       
+      CreateCloseLabelBeforeClose(ticket);
       if(trade.PositionClose(ticket)) {
          closedCount++;
       }
@@ -2834,6 +3335,7 @@ void UpdateGroupTrailing(bool useSameTypeOnly = false) {
          if(PositionSelectByTicket(worstLossTicket)) {
             double lots = PositionGetDouble(POSITION_VOLUME);
             double profit = PositionGetDouble(POSITION_PROFIT);
+            CreateCloseLabelBeforeClose(worstLossTicket);
             if(trade.PositionClose(worstLossTicket)) {
                closedCount++;
                closedProfit += profit;
@@ -2854,6 +3356,7 @@ void UpdateGroupTrailing(bool useSameTypeOnly = false) {
                
                // SAFETY: Only close if still in profit at this moment
                if(profit > 0) {
+                  CreateCloseLabelBeforeClose(selectedTickets[i]);
                   if(trade.PositionClose(selectedTickets[i])) {
                      closedCount++;
                      closedProfit += profit;
@@ -2938,9 +3441,59 @@ void PrintCurrentStats() {
        openProfit, bookedCycle, equity, g_startingEquity, g_lastCloseEquity));
    Log(1, StringFormat("Orders: B%d/%.2f S%d/%.2f Net%.2f | NextLot B%.2f S%.2f",
        g_buyCount, g_buyLots, g_sellCount, g_sellLots, g_netLots, g_nextBuyLot, g_nextSellLot));
-   Log(1, StringFormat("MaxLot: Cycle%.2f Overall%.2f | GLO:%d/%d | Spread:%.1f/%.1f",
-       g_maxLotsCycle, g_overallMaxLotSize, g_orders_in_loss, g_maxGLOOverall, 
+   int orderCountDiff = MathAbs(g_buyCount - g_sellCount);
+   Log(1, StringFormat("MaxLot: Cycle%.2f Overall%.2f | GLO:%d/%d/%d | Spread:%.1f/%.1f",
+       g_maxLotsCycle, g_overallMaxLotSize, orderCountDiff, g_orders_in_loss, g_maxGLOOverall, 
        (SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * _Point)/_Point, g_maxSpread/_Point));
+   
+   // Display current input settings
+   Log(1, "---------- CURRENT INPUT SETTINGS ----------");
+   Log(1, StringFormat("Magic:%d | Gap:%.0f | BaseLot:%.2f | MaxPos:%d",
+       Magic, GapInPoints, BaseLotSize, MaxPositions));
+   
+   string lotMethodStr = "";
+   switch(LotChangeMethod) {
+      case LOT_METHOD_MAXORDERS_SWITCH: lotMethodStr = "MaxOrders"; break;
+      case LOT_METHOD_ORDERDIFF_SWITCH: lotMethodStr = "OrderDiff"; break;
+      case LOT_METHOD_HEDGE_SAMESIZE: lotMethodStr = "HedgeSame"; break;
+      case LOT_METHOD_FIXED_LEVELS: lotMethodStr = "FixedLevels"; break;
+      case LOT_METHOD_GLO_BASED: lotMethodStr = "GLO-Based"; break;
+      default: lotMethodStr = "Unknown"; break;
+   }
+   Log(1, StringFormat("LotMethod:%s | SwitchCount:%d", lotMethodStr, SwitchModeCount));
+   
+   string trailMethodStr = "";
+   switch(g_currentTrailMethod) {
+      case SINGLE_TRAIL_NORMAL: trailMethodStr = "NORMAL"; break;
+      case SINGLE_TRAIL_CLOSETOGETHER: trailMethodStr = "ANYSIDE"; break;
+      case SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE: trailMethodStr = "SAMETYPE"; break;
+      case SINGLE_TRAIL_DYNAMIC: trailMethodStr = "DYNAMIC"; break;
+      case SINGLE_TRAIL_DYNAMIC_SAMETYPE: trailMethodStr = "DYN-SAME"; break;
+      case SINGLE_TRAIL_DYNAMIC_ANYSIDE: trailMethodStr = "DYN-ANY"; break;
+      case SINGLE_TRAIL_HYBRID_BALANCED: trailMethodStr = "HYB-BAL"; break;
+      case SINGLE_TRAIL_HYBRID_ADAPTIVE: trailMethodStr = "HYB-ADP"; break;
+      case SINGLE_TRAIL_HYBRID_SMART: trailMethodStr = "HYB-SMART"; break;
+      case SINGLE_TRAIL_HYBRID_COUNT_DIFF: trailMethodStr = "HYB-CNT"; break;
+      default: trailMethodStr = StringFormat("%d", g_currentTrailMethod); break;
+   }
+   
+   string sTrailModeStr = (g_singleTrailMode == 0) ? "TIGHT" : (g_singleTrailMode == 1) ? "NORMAL" : "LOOSE";
+   string tTrailModeStr = (g_totalTrailMode == 0) ? "TIGHT" : (g_totalTrailMode == 1) ? "NORMAL" : "LOOSE";
+   string debugLevelStr = (g_currentDebugLevel == 0) ? "OFF" : (g_currentDebugLevel == 1) ? "CRITICAL" : (g_currentDebugLevel == 2) ? "INFO" : "VERBOSE";
+   
+   Log(1, StringFormat("TrailMethod:%s | STrail:%s | TTrail:%s",
+       trailMethodStr, sTrailModeStr, tTrailModeStr));
+   Log(1, StringFormat("DebugLevel:%s | ShowLabels:%s | ShowNextLines:%s",
+       debugLevelStr, g_showLabels ? "YES" : "NO", g_showNextLevelLines ? "YES" : "NO"));
+   Log(1, StringFormat("SingleThreshold:%.0f | MinGLO:%d | DynGLO:%d | MinGroupProfit:%.0f",
+       SingleProfitThreshold, MinGLOForGroupTrail, DynamicGLOThreshold, MinGroupProfitToClose));
+   Log(1, StringFormat("HybridNetLots:%.1f | HybridGLO%%:%.0f%% | HybridBalance:%.1f | HybridCountDiff:%d",
+       HybridNetLotsThreshold, HybridGLOPercentage * 100, HybridBalanceFactor, HybridCountDiffThreshold));
+   Log(1, StringFormat("OrderStrategy:%d | PlacementType:%d | AdjacentLevels:%d",
+       OrderPlacementStrategy, OrderPlacementType, AdjacentLevelsCount));
+   Log(1, StringFormat("TrailOrderMode:%d | UseAdaptiveGap:%s | ATRPeriod:%d",
+       TrailOrderMode, UseAdaptiveGap ? "YES" : "NO", ATRPeriod));
+   Log(1, "-------------------------------------------");
    
    // Print order tracker buffer
    Log(1, StringFormat("Order Tracker: %d orders in buffer", g_orderCount));
@@ -3001,25 +3554,124 @@ void TrailSinglePositions() {
    if(!EnableSingleTrailing) return;
    
    // Dynamic methods: choose based on GLO count
-   if(SingleTrailMethod == SINGLE_TRAIL_DYNAMIC || 
-      SingleTrailMethod == SINGLE_TRAIL_DYNAMIC_SAMETYPE || 
-      SingleTrailMethod == SINGLE_TRAIL_DYNAMIC_ANYSIDE) {
+   if(g_currentTrailMethod == SINGLE_TRAIL_DYNAMIC || 
+      g_currentTrailMethod == SINGLE_TRAIL_DYNAMIC_SAMETYPE || 
+      g_currentTrailMethod == SINGLE_TRAIL_DYNAMIC_ANYSIDE) {
       if(g_orders_in_loss >= DynamicGLOThreshold) {
          // GLO count is high - use group trailing with appropriate mode
-         bool useSameType = (SingleTrailMethod == SINGLE_TRAIL_DYNAMIC_SAMETYPE);
+         bool useSameType = (g_currentTrailMethod == SINGLE_TRAIL_DYNAMIC_SAMETYPE);
          UpdateGroupTrailing(useSameType);
          return;
       }
       // GLO count is low - continue with normal single trailing below
    }
    
+   // Hybrid Balanced: Switch based on net exposure imbalance
+   if(g_currentTrailMethod == SINGLE_TRAIL_HYBRID_BALANCED) {
+      double netExposure = MathAbs(g_netLots);
+      if(netExposure >= HybridNetLotsThreshold) {
+         // High imbalance - use group close to reduce exposure
+         bool useSameType = (netExposure > HybridNetLotsThreshold * 1.5); // Very high = same type only
+         Log(2, StringFormat("HYBRID_BALANCED: Net exposure %.2f >= %.2f, using GROUP close (sameType=%d)", 
+             netExposure, HybridNetLotsThreshold, useSameType ? 1 : 0));
+         UpdateGroupTrailing(useSameType);
+         return;
+      } else {
+         // Balanced grid - use single trail
+         Log(3, StringFormat("HYBRID_BALANCED: Net exposure %.2f < %.2f, using SINGLE trail", 
+             netExposure, HybridNetLotsThreshold));
+         // Continue to normal single trailing below
+      }
+   }
+   
+   // Hybrid Adaptive: Switch based on GLO ratio and profit state
+   if(g_currentTrailMethod == SINGLE_TRAIL_HYBRID_ADAPTIVE) {
+      int totalOrders = g_buyCount + g_sellCount;
+      double gloRatio = (totalOrders > 0) ? (double)g_orders_in_loss / totalOrders : 0.0;
+      double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+      double cycleProfit = equity - g_lastCloseEquity;
+      
+      // If many orders in loss OR cycle is negative, use group close
+      if(gloRatio >= HybridGLOPercentage || cycleProfit < 0) {
+         Log(2, StringFormat("HYBRID_ADAPTIVE: GLO ratio %.1f%% >= %.1f%% OR cycleProfit %.2f < 0, using GROUP close", 
+             gloRatio * 100, HybridGLOPercentage * 100, cycleProfit));
+         UpdateGroupTrailing(true); // Same type only when adapting
+         return;
+      } else {
+         // Good conditions - use single trail
+         Log(3, StringFormat("HYBRID_ADAPTIVE: GLO ratio %.1f%% < %.1f%% AND cycleProfit %.2f >= 0, using SINGLE trail", 
+             gloRatio * 100, HybridGLOPercentage * 100, cycleProfit));
+         // Continue to normal single trailing below
+      }
+   }
+   
+   // Hybrid Smart: Multiple factors (net exposure + GLO ratio + cycle profit)
+   if(g_currentTrailMethod == SINGLE_TRAIL_HYBRID_SMART) {
+      double netExposure = MathAbs(g_netLots);
+      int totalOrders = g_buyCount + g_sellCount;
+      double gloRatio = (totalOrders > 0) ? (double)g_orders_in_loss / totalOrders : 0.0;
+      double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+      double cycleProfit = equity - g_lastCloseEquity;
+      
+      // Calculate imbalance factor (how one-sided is the grid)
+      double imbalanceFactor = 1.0;
+      if(g_buyLots > 0.001 && g_sellLots > 0.001) {
+         imbalanceFactor = MathMax(g_buyLots / g_sellLots, g_sellLots / g_buyLots);
+      }
+      
+      // Decision logic: Use GROUP close when multiple risk factors present
+      bool highImbalance = (imbalanceFactor >= HybridBalanceFactor);
+      bool highGLO = (gloRatio >= HybridGLOPercentage);
+      bool negativeCycle = (cycleProfit < -MathAbs(g_maxLossCycle * 0.3)); // More than 30% of max loss
+      bool highNetExposure = (netExposure >= HybridNetLotsThreshold);
+      
+      int riskFactors = (highImbalance ? 1 : 0) + (highGLO ? 1 : 0) + (negativeCycle ? 1 : 0) + (highNetExposure ? 1 : 0);
+      
+      if(riskFactors >= 2) {
+         // 2 or more risk factors - use group close
+         bool useSameType = (riskFactors >= 3); // 3+ factors = same type only (stricter)
+         Log(2, StringFormat("HYBRID_SMART: %d risk factors detected (Imb=%.1f>%.1f:%d, GLO=%.0f%%>%.0f%%:%d, CycleP=%.2f<%.2f:%d, NetL=%.2f>%.2f:%d), using GROUP close (sameType=%d)",
+             riskFactors, imbalanceFactor, HybridBalanceFactor, highImbalance ? 1 : 0,
+             gloRatio * 100, HybridGLOPercentage * 100, highGLO ? 1 : 0,
+             cycleProfit, -MathAbs(g_maxLossCycle * 0.3), negativeCycle ? 1 : 0,
+             netExposure, HybridNetLotsThreshold, highNetExposure ? 1 : 0,
+             useSameType ? 1 : 0));
+         UpdateGroupTrailing(useSameType);
+         return;
+      } else {
+         // Low risk - use single trail
+         Log(3, StringFormat("HYBRID_SMART: Only %d risk factors, using SINGLE trail (Imb=%.1f, GLO=%.0f%%, CycleP=%.2f, NetL=%.2f)",
+             riskFactors, imbalanceFactor, gloRatio * 100, cycleProfit, netExposure));
+         // Continue to normal single trailing below
+      }
+   }
+   
+   // Hybrid Count Diff: Switch based on buy/sell order count difference
+   if(g_currentTrailMethod == SINGLE_TRAIL_HYBRID_COUNT_DIFF) {
+      int countDiff = MathAbs(g_buyCount - g_sellCount);
+      
+      if(countDiff > HybridCountDiffThreshold) {
+         // High imbalance in order counts - use group close
+         bool useSameType = (countDiff > HybridCountDiffThreshold * 1.5); // Very high diff = same type only
+         Log(2, StringFormat("HYBRID_COUNT_DIFF: Order count diff %d > %d (Buy=%d, Sell=%d), using GROUP close (sameType=%d)",
+             countDiff, HybridCountDiffThreshold, g_buyCount, g_sellCount, useSameType ? 1 : 0));
+         UpdateGroupTrailing(useSameType);
+         return;
+      } else {
+         // Balanced order counts - use single trail
+         Log(3, StringFormat("HYBRID_COUNT_DIFF: Order count diff %d <= %d (Buy=%d, Sell=%d), using SINGLE trail",
+             countDiff, HybridCountDiffThreshold, g_buyCount, g_sellCount));
+         // Continue to normal single trailing below
+      }
+   }
+   
    // Route to appropriate trailing method
-   if(SingleTrailMethod == SINGLE_TRAIL_CLOSETOGETHER) {
+   if(g_currentTrailMethod == SINGLE_TRAIL_CLOSETOGETHER) {
       UpdateGroupTrailing(false); // Any side
       return;
    }
    
-   if(SingleTrailMethod == SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE) {
+   if(g_currentTrailMethod == SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE) {
       UpdateGroupTrailing(true); // Same type only
       return;
    }
@@ -3131,6 +3783,7 @@ void TrailSinglePositions() {
                Log(1, StringFormat("ST CLOSE %s #%I64u %s %.2f lots | Profit=%.2f | Trail Stats: Peak=%.2f Current=%.2f Drop=%.2f TrailMin=%.2f", 
                    levelInfo, ticket, posType, posLots, posProfit, activePeak, profitPer01, drop, trailFloorValue));
                
+               CreateCloseLabelBeforeClose(ticket);
                if(trade.PositionClose(ticket)) {
                   string lineName = StringFormat("TrailFloor_%I64u", ticket);
                   ObjectDelete(0, lineName);
@@ -3272,23 +3925,45 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          Log(1, "Stats printed to log");
       }
       
-      // Button 7: Debug Level (cycle through 0, 1, 2, 3)
+      // Button 7: Debug Level (show selection panel)
       if(sparam == "BtnDebugLevel") {
-         g_currentDebugLevel = (g_currentDebugLevel + 1) % 4; // Cycle: 0 -> 1 -> 2 -> 3 -> 0
+         if(g_activeSelectionPanel == "DebugLevel") {
+            DestroySelectionPanel();
+         } else {
+            CreateSelectionPanel("DebugLevel");
+         }
+      }
+      
+      // Handle Debug Level selections
+      if(StringFind(sparam, "SelectDebug_") >= 0) {
+         int selectedLevel = (int)StringToInteger(StringSubstr(sparam, 12)); // Extract number from "SelectDebug_X"
+         g_currentDebugLevel = selectedLevel;
+         DestroySelectionPanel();
          UpdateButtonStates();
          string levelName = "";
          switch(g_currentDebugLevel) {
-            case 0: levelName = "0 OFF"; break;
-            case 1: levelName = "1 CRITICAL"; break;
-            case 2: levelName = "2 INFO"; break;
-            case 3: levelName = "3 VERBOSE"; break;
+            case 0: levelName = "OFF"; break;
+            case 1: levelName = "CRITICAL"; break;
+            case 2: levelName = "INFO"; break;
+            case 3: levelName = "VERBOSE"; break;
          }
          Log(1, StringFormat("Debug Level changed to: %d (%s)", g_currentDebugLevel, levelName));
       }
       
-      // Button 8: Single Trail Mode (cycle through 0, 1, 2)
+      // Button 8: Single Trail Mode (show selection panel)
       if(sparam == "BtnSingleTrail") {
-         g_singleTrailMode = (g_singleTrailMode + 1) % 3; // Cycle: 0 -> 1 -> 2 -> 0
+         if(g_activeSelectionPanel == "SingleTrail") {
+            DestroySelectionPanel();
+         } else {
+            CreateSelectionPanel("SingleTrail");
+         }
+      }
+      
+      // Handle Single Trail selections
+      if(StringFind(sparam, "SelectSTrail_") >= 0) {
+         int selectedMode = (int)StringToInteger(StringSubstr(sparam, 13)); // Extract number from "SelectSTrail_X"
+         g_singleTrailMode = selectedMode;
+         DestroySelectionPanel();
          UpdateButtonStates();
          string modeName = "";
          double multiplier = 1.0;
@@ -3300,9 +3975,20 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          Log(1, StringFormat("Single Trail Mode changed to: %d (%s, gap multiplier=%.1fx)", g_singleTrailMode, modeName, multiplier));
       }
       
-      // Button 9: Total Trail Mode (cycle through 0, 1, 2)
+      // Button 9: Total Trail Mode (show selection panel)
       if(sparam == "BtnTotalTrail") {
-         g_totalTrailMode = (g_totalTrailMode + 1) % 3; // Cycle: 0 -> 1 -> 2 -> 0
+         if(g_activeSelectionPanel == "TotalTrail") {
+            DestroySelectionPanel();
+         } else {
+            CreateSelectionPanel("TotalTrail");
+         }
+      }
+      
+      // Handle Total Trail selections
+      if(StringFind(sparam, "SelectTTrail_") >= 0) {
+         int selectedMode = (int)StringToInteger(StringSubstr(sparam, 13)); // Extract number from "SelectTTrail_X"
+         g_totalTrailMode = selectedMode;
+         DestroySelectionPanel();
          UpdateButtonStates();
          string modeName = "";
          double multiplier = 1.0;
@@ -3313,6 +3999,77 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          }
          Log(1, StringFormat("Total Trail Mode changed to: %d (%s, gap multiplier=%.1fx)", g_totalTrailMode, modeName, multiplier));
       }
+      
+      // Button 10: Trail Method Strategy (show selection panel)
+      if(sparam == "BtnTrailMethod") {
+         if(g_activeSelectionPanel == "TrailMethod") {
+            DestroySelectionPanel();
+         } else {
+            CreateSelectionPanel("TrailMethod");
+         }
+      }
+      
+      // Handle Trail Method selections
+      if(StringFind(sparam, "SelectMethod_") >= 0) {
+         int selectedMethod = (int)StringToInteger(StringSubstr(sparam, 13)); // Extract number from "SelectMethod_X"
+         g_currentTrailMethod = selectedMethod;
+         DestroySelectionPanel();
+         UpdateButtonStates();
+         string methodName = "";
+         switch(g_currentTrailMethod) {
+            case 0: methodName = "NORMAL (independent trail)"; break;
+            case 1: methodName = "CLOSETOGETHER (group any-side)"; break;
+            case 2: methodName = "CLOSETOGETHER_SAMETYPE (group same-side)"; break;
+            case 3: methodName = "DYNAMIC (GLO-based switch)"; break;
+            case 4: methodName = "DYNAMIC_SAMETYPE (GLO-based same-side)"; break;
+            case 5: methodName = "DYNAMIC_ANYSIDE (GLO-based any-side)"; break;
+            case 6: methodName = "HYBRID_BALANCED (net exposure based)"; break;
+            case 7: methodName = "HYBRID_ADAPTIVE (GLO% + profit based)"; break;
+            case 8: methodName = "HYBRID_SMART (multi-factor analysis)"; break;
+            case 9: methodName = "HYBRID_COUNT_DIFF (order count difference based)"; break;
+         }
+         Log(1, StringFormat("Trail Method changed to: %d (%s)", g_currentTrailMethod, methodName));
+      }
+      
+      // Button 11: Toggle Order Labels
+      if(sparam == "BtnOrderLabels") {
+         g_showOrderLabels = !g_showOrderLabels;
+         
+         if(!g_showOrderLabels) {
+            HideAllOrderLabels();
+         } else {
+            ShowAllOrderLabels();
+         }
+         
+         UpdateButtonStates();
+         Log(1, StringFormat("Order Labels Display: %s", g_showOrderLabels ? "ENABLED" : "DISABLED"));
+      }
+      
+      // Button 12: Reset Counters (triple-click protection)
+      if(sparam == "BtnResetCounters") {
+         datetime currentTime = TimeCurrent();
+         
+         // Check if this is within 3 seconds of first click
+         if(g_resetCountersClickTime > 0 && (currentTime - g_resetCountersClickTime) <= 3) {
+            g_resetCountersClickCount++;
+            
+            if(g_resetCountersClickCount >= 3) {
+               // Triple-click confirmed - reset all counters
+               ResetAllCounters();
+               g_resetCountersClickTime = 0;
+               g_resetCountersClickCount = 0;
+               Log(1, "Reset Counters: ALL COUNTERS RESET");
+            } else {
+               Log(1, StringFormat("Reset Counters: Click %d/3 - Click %d more time(s) within 3 seconds", 
+                   g_resetCountersClickCount, 3 - g_resetCountersClickCount));
+            }
+         } else {
+            // First click or timeout - restart counter
+            g_resetCountersClickTime = currentTime;
+            g_resetCountersClickCount = 1;
+            Log(1, "Reset Counters: Click 1/3 - Click 2 more times within 3 seconds to reset");
+         }
+      }
    }
 }
 
@@ -3320,6 +4077,19 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 int OnInit() {
    // Initialize current debug level from input
    g_currentDebugLevel = DebugLevel;
+   
+   // Initialize trail method from input
+   g_currentTrailMethod = SingleTrailMethod;
+   
+   // Initialize order labels from input
+   g_showOrderLabels = ShowOrderLabels;
+   
+   // Initialize button states from inputs
+   g_stopNewOrders = InitialStopNewOrders;
+   g_noWork = InitialNoWork;
+   g_showNextLevelLines = ShowNextLevelLines;
+   g_singleTrailMode = InitialSingleTrailMode;
+   g_totalTrailMode = InitialTotalTrailMode;
    
    Log(1, StringFormat("EA Init: Magic=%d Gap=%.1f Lot=%.2f", Magic, GapInPoints, BaseLotSize));
    
@@ -3671,7 +4441,8 @@ void UpdateCurrentProfitVline() {
    int centerX = (int)(chartWidth / 2);
    int centerY = (int)(chartHeight / 2);
    
-   string centerText = StringFormat("T%.0f/%d", overallProfit, g_orders_in_loss);
+   int orderCountDiff = MathAbs(g_buyCount - g_sellCount);
+   string centerText = StringFormat("T%.0f/%d/%d", overallProfit, orderCountDiff, g_orders_in_loss);
    color centerColor = (overallProfit >= 0) ? clrLime : clrRed;
    
    // Create center label with absolute positioning
@@ -3791,6 +4562,7 @@ void OnDeinit(const int reason) {
    ObjectDelete(0, "BtnDebugLevel");
    ObjectDelete(0, "BtnSingleTrail");
    ObjectDelete(0, "BtnTotalTrail");
+   ObjectDelete(0, "BtnTrailMethod");
    ObjectDelete(0, "TotalTrailFloor");  // Total trail floor line
    ObjectDelete(0, "CenterProfitLabel");
    ObjectDelete(0, "CenterCycleLabel");
