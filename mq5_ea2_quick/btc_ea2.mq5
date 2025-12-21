@@ -67,7 +67,9 @@ enum ENUM_SINGLE_TRAIL_METHOD {
    SINGLE_TRAIL_NORMAL = 0,       // Normal - trail each order independently
    SINGLE_TRAIL_CLOSETOGETHER = 1, // Close Together - trail worst loss with profitable orders (any side)
    SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE = 2, // Close Together Same Type - trail worst loss with profitable orders (same side only)
-   SINGLE_TRAIL_DYNAMIC = 3       // Dynamic - switch between single and group trail based on GLO count
+   SINGLE_TRAIL_DYNAMIC = 3,      // Dynamic - switch between single and group trail based on GLO count (uses any side mode when group trailing)
+   SINGLE_TRAIL_DYNAMIC_SAMETYPE = 4, // Dynamic Same Type - switch based on GLO, use same-side mode when group trailing
+   SINGLE_TRAIL_DYNAMIC_ANYSIDE = 5   // Dynamic Any Side - switch based on GLO, use any-side mode when group trailing
 };
 input ENUM_SINGLE_TRAIL_METHOD SingleTrailMethod = SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE; // Single trail closing method
 input int MinGLOForGroupTrail = 10; // Minimum GLO orders to activate group trailing
@@ -2364,7 +2366,8 @@ void RemoveTrail(int index) {
 
 //============================= GROUP TRAILING (CLOSE TOGETHER) ====//
 // Trail combined profit of farthest losing orders + farthest profitable orders
-void UpdateGroupTrailing() {
+// useSameTypeOnly: if true, only close same-type orders together; if false, can close any-side orders
+void UpdateGroupTrailing(bool useSameTypeOnly = false) {
    if(!EnableSingleTrailing) return;
    if(g_trailActive) return; // Skip when total trailing active
    if(g_noWork) return;
@@ -2410,9 +2413,9 @@ void UpdateGroupTrailing() {
          }
       } else if(profit > 0) {
          // Store profitable orders based on mode
-         // CLOSETOGETHER: any side, CLOSETOGETHER_SAMETYPE: same type only
-         bool shouldInclude = (SingleTrailMethod == SINGLE_TRAIL_CLOSETOGETHER) || 
-                              (SingleTrailMethod == SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE && type == worstLossType);
+         // If useSameTypeOnly is true, only include same-type profitable orders
+         // If useSameTypeOnly is false, include all profitable orders (any side)
+         bool shouldInclude = !useSameTypeOnly || (useSameTypeOnly && type == worstLossType);
          
          if(shouldInclude) {
             ArrayResize(profitableOrders, profitableCount + 1);
@@ -2630,20 +2633,27 @@ void UpdateGroupTrailing() {
 void TrailSinglePositions() {
    if(!EnableSingleTrailing) return;
    
-   // Dynamic method: choose based on GLO count
-   if(SingleTrailMethod == SINGLE_TRAIL_DYNAMIC) {
+   // Dynamic methods: choose based on GLO count
+   if(SingleTrailMethod == SINGLE_TRAIL_DYNAMIC || 
+      SingleTrailMethod == SINGLE_TRAIL_DYNAMIC_SAMETYPE || 
+      SingleTrailMethod == SINGLE_TRAIL_DYNAMIC_ANYSIDE) {
       if(g_orders_in_loss >= DynamicGLOThreshold) {
-         // GLO count is high - use group trailing
-         UpdateGroupTrailing();
+         // GLO count is high - use group trailing with appropriate mode
+         bool useSameType = (SingleTrailMethod == SINGLE_TRAIL_DYNAMIC_SAMETYPE);
+         UpdateGroupTrailing(useSameType);
          return;
       }
       // GLO count is low - continue with normal single trailing below
    }
    
    // Route to appropriate trailing method
-   if(SingleTrailMethod == SINGLE_TRAIL_CLOSETOGETHER || 
-      SingleTrailMethod == SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE) {
-      UpdateGroupTrailing();
+   if(SingleTrailMethod == SINGLE_TRAIL_CLOSETOGETHER) {
+      UpdateGroupTrailing(false); // Any side
+      return;
+   }
+   
+   if(SingleTrailMethod == SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE) {
+      UpdateGroupTrailing(true); // Same type only
       return;
    }
    
@@ -3068,8 +3078,8 @@ void UpdateCurrentProfitVline() {
          
          int totalCount = g_buyCount + g_sellCount;
          double totalLots = g_buyLots + g_sellLots;
-         string vlinetext = StringFormat("P:%.2f/%.2f/%.2f/%.2f(L%.2f)ML%.2f/%.2f L%.2f/%.2f N:%d/%.2f/%.2f", 
-               cycleProfit, trailStart, g_trailFloor, g_trailPeak, bookedCycle, -g_maxLossCycle, -g_overallMaxLoss, 
+         string vlinetext = StringFormat("P:%.2f/%.2f/%.2f/%.2f/%.2f(L%.2f)ML%.2f/%.2f L%.2f/%.2f N:%d/%.2f/%.2f", 
+               cycleProfit, g_maxProfitCycle, trailStart, g_trailFloor, g_trailPeak, bookedCycle, -g_maxLossCycle, -g_overallMaxLoss, 
                g_maxLotsCycle, g_overallMaxLotSize, totalCount, g_netLots, totalLots);
          ObjectSetString(0, vlineName, OBJPROP_TEXT, vlinetext);
       }
@@ -3089,8 +3099,8 @@ void UpdateCurrentProfitVline() {
    double profitStart = g_maxProfitCycle * TrailProfitPct;
    double trailStart = MathMax(lossStart, profitStart);
    
-   string vlinetext = StringFormat("P:%.0f/%.0f/%.0f/%.0f(E%.0f)ML%.0f/%.0f L%.2f/%.2f glo %d/%d%s", 
-         cycleProfit, trailStart, g_trailFloor, g_trailPeak, bookedCycle, -g_maxLossCycle, -g_overallMaxLoss, 
+   string vlinetext = StringFormat("P:%.0f/%.0f/%.0f/%.0f/%.0f(E%.0f)ML%.0f/%.0f L%.2f/%.2f glo %d/%d%s", 
+         cycleProfit, g_maxProfitCycle, trailStart, g_trailFloor, g_trailPeak, bookedCycle, -g_maxLossCycle, -g_overallMaxLoss, 
          g_maxLotsCycle, g_overallMaxLotSize, g_orders_in_loss, g_maxGLOOverall, modeIndicator);
    UpdateOrCreateLabel("CurrentProfitLabel", 10, 30, vlinetext, lineColor, 12, "Arial Bold");
    
@@ -3220,14 +3230,14 @@ void UpdateCurrentProfitVline() {
    }
    UpdateOrCreateLabel("Last5DaysOverallLabel", 10, 166, label8text, clrYellow, 9, "Arial");
    
-   // Label 9: Center Label - Overall Profit & Net Lots
+   // Label 9: Center Label Line 1 - Total Profit / Max Overall Loss
    long chartWidth = ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
    long chartHeight = ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
    int centerX = (int)(chartWidth / 2);
    int centerY = (int)(chartHeight / 2);
    
-   string centerText = StringFormat("P%.0f N%.2f",cycleProfit,  g_netLots);
-   color centerColor = (cycleProfit >= 0) ? clrLime : clrRed;
+   string centerText = StringFormat("T%.0f/%.0f", overallProfit, g_overallMaxLoss);
+   color centerColor = (overallProfit >= 0) ? clrLime : clrRed;
    
    // Create center label with absolute positioning
    string centerName = "CenterProfitLabel";
@@ -3253,7 +3263,7 @@ void UpdateCurrentProfitVline() {
    ObjectSetString(0, centerName, OBJPROP_TEXT, centerText);
    ObjectSetInteger(0, centerName, OBJPROP_COLOR, centerColor);
    
-   // Label 8: Center Label Line 2 - Cycle Profit & Booked Profit
+   // Label 10: Center Label Line 2 - Current Cycle Profit / Booked Profit in this Cycle
    // bookedCycle is already calculated earlier in this function
    
    // Create cycle/booked label split into two parts for different colors
@@ -3263,13 +3273,13 @@ void UpdateCurrentProfitVline() {
    int centerY2 = centerY + (int)(CenterPanelFontSize * 1.25);
    
    // Calculate text widths for positioning (approximate)
-   string cycleText = StringFormat("T%.0f", overallProfit);
-   string bookedText = StringFormat("E%.0f", bookedCycle);
+   string cycleText = StringFormat("P%.0f", cycleProfit);
+   string bookedText = StringFormat(" E%.0f", bookedCycle);
    int cycleWidth = StringLen(cycleText) * 12; // Approximate pixel width per character
    int bookedWidth = StringLen(bookedText) * 12;
    int totalWidth = cycleWidth + bookedWidth + 20; // 20 for space between
    
-   color cycleColor = (overallProfit >= 0) ? clrLime : clrRed;
+   color cycleColor = (cycleProfit >= 0) ? clrLime : clrRed;
    color bookedColor = (bookedCycle >= 0) ? clrLime : clrRed;
    
    // Create/update cycle profit label (left part)
@@ -3308,6 +3318,31 @@ void UpdateCurrentProfitVline() {
    ObjectSetString(0, centerName2Booked, OBJPROP_TEXT, bookedText);
    ObjectSetInteger(0, centerName2Booked, OBJPROP_COLOR, bookedColor);
    
+   // Label 11: Center Label Line 3 - Net Lots / Max Lot Size / Current GLO
+   string centerName3 = "CenterNetLotsLabel";
+   int centerY3 = centerY2 + (int)(CenterPanel2FontSize * 1.25);
+   
+   string netLotsText = StringFormat("N%.2f/%.2f/%d", g_netLots, g_maxLotsCycle, g_orders_in_loss);
+   color netLotsColor = clrWhite;
+   
+   // Create/update net lots label (centered)
+   if(ObjectFind(0, centerName3) < 0) {
+      ObjectCreate(0, centerName3, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, centerName3, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, centerName3, OBJPROP_ANCHOR, ANCHOR_CENTER);
+      ObjectSetInteger(0, centerName3, OBJPROP_FONTSIZE, CenterPanel2FontSize);
+      ObjectSetString(0, centerName3, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, centerName3, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, centerName3, OBJPROP_HIDDEN, false);
+      ObjectSetInteger(0, centerName3, OBJPROP_BACK, false);
+      ObjectSetInteger(0, centerName3, OBJPROP_ZORDER, 0);
+   }
+   ObjectSetInteger(0, centerName3, OBJPROP_XDISTANCE, centerX);
+   ObjectSetInteger(0, centerName3, OBJPROP_YDISTANCE, centerY3);
+   ObjectSetInteger(0, centerName3, OBJPROP_FONTSIZE, CenterPanel2FontSize);
+   ObjectSetString(0, centerName3, OBJPROP_TEXT, netLotsText);
+   ObjectSetInteger(0, centerName3, OBJPROP_COLOR, netLotsColor);
+   
    ChartRedraw(0);
 }
 void OnDeinit(const int reason) {
@@ -3320,6 +3355,7 @@ void OnDeinit(const int reason) {
    ObjectDelete(0, "CenterProfitLabel");
    ObjectDelete(0, "CenterCycleLabel");
    ObjectDelete(0, "CenterBookedLabel");
+   ObjectDelete(0, "CenterNetLotsLabel");
    ObjectDelete(0, "NextBuyLevelUp");
    ObjectDelete(0, "NextBuyLevelDown");
    ObjectDelete(0, "NextSellLevelUp");
