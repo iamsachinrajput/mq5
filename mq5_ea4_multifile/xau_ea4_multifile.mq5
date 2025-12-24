@@ -28,10 +28,10 @@ int OnInit() {
    g_stopNewOrders = InitialStopNewOrders;
    g_noWork = InitialNoWork;
    g_showNextLevelLines = ShowNextLevelLines;
+   g_showLevelLines = ShowNextLevelLines;  // Sync with next level lines
    g_singleTrailMode = InitialSingleTrailMode;
    g_totalTrailMode = InitialTotalTrailMode;
    g_showMainButtons = InitialShowButtons;
-   g_showLevelLines = InitialShowLevelLines;
    g_tradeLoggingActive = EnableTradeLogging;
    
    Log(1, StringFormat("EA Init: Magic=%d Gap=%.1f Lot=%.2f", Magic, GapInPoints, BaseLotSize));

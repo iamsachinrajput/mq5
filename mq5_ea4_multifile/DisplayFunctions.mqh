@@ -25,14 +25,15 @@ void DrawLevelLines() {
       ObjectSetDouble(0, lineName, OBJPROP_PRICE, levelPrice);
       
       // Set line properties
-      color lineColor = (i == 0) ? clrYellow : clrDarkSlateGray;
+      color lineColor = clrWhite;
       int lineWidth = (i == 0) ? 2 : 1;
       ObjectSetInteger(0, lineName, OBJPROP_COLOR, lineColor);
       ObjectSetInteger(0, lineName, OBJPROP_WIDTH, lineWidth);
       ObjectSetInteger(0, lineName, OBJPROP_STYLE, STYLE_DOT);
       ObjectSetInteger(0, lineName, OBJPROP_BACK, true);
       ObjectSetInteger(0, lineName, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, lineName, OBJPROP_HIDDEN, true);
+      ObjectSetInteger(0, lineName, OBJPROP_HIDDEN, false);
+      ObjectSetInteger(0, lineName, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
       
       // Create text label
       string labelName = StringFormat("LevelLabel_%d", level);
@@ -47,7 +48,8 @@ void DrawLevelLines() {
       ObjectSetString(0, labelName, OBJPROP_FONT, "Arial");
       ObjectSetInteger(0, labelName, OBJPROP_ANCHOR, ANCHOR_LEFT);
       ObjectSetInteger(0, labelName, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, labelName, OBJPROP_HIDDEN, true);
+      ObjectSetInteger(0, labelName, OBJPROP_HIDDEN, false);
+      ObjectSetInteger(0, labelName, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
    }
    
    ChartRedraw(0);
@@ -342,6 +344,7 @@ void CreateButtons() {
       ObjectSetInteger(0, btn14Name, OBJPROP_COLOR, clrWhite);
       ObjectSetInteger(0, btn14Name, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, btn14Name, OBJPROP_HIDDEN, false);
+      ObjectSetInteger(0, btn14Name, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
    }
    
    // Button 15: Print Stats (LESS CRITICAL)
@@ -1370,12 +1373,15 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       // Button 5: Toggle Next Level Lines
       if(sparam == "BtnToggleNextLines") {
          g_showNextLevelLines = !g_showNextLevelLines;
+         g_showLevelLines = g_showNextLevelLines;  // Sync level lines with next lines
          
          if(!g_showNextLevelLines) {
             // Lines will be deleted in UpdateNextLevelLines() on next call
+            RemoveLevelLines();  // Also remove level lines
             Log(1, "Next Level Lines: DISABLED (calculations stopped)");
          } else {
-            Log(1, "Next Level Lines: ENABLED (will show next available order levels)");
+            DrawLevelLines();  // Also draw level lines
+            Log(1, "Next Level Lines: ENABLED (will show next available order levels + level lines)");
          }
          
          UpdateButtonStates();
