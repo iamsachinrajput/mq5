@@ -129,6 +129,7 @@ input bool   InitialNoWork = false;        // Initial state for No Work button
 input int    InitialSingleTrailMode = 2;   // Initial Single Trail Mode (0=Tight, 1=Normal, 2=Loose)
 input int    InitialTotalTrailMode = 1;    // Initial Total Trail Mode (0=Tight, 1=Normal, 2=Loose)
 input bool   InitialShowButtons = false;   // Initial state for main buttons visibility (false = hidden at start)
+input bool   InitialShowLevelLines = false; // Initial state for level lines display (false = hidden at start)
 
 // Order Placement Settings
 input int    OrderPlacementDelayMs = 0;  // Delay between orders in milliseconds (0 = no delay)
@@ -218,6 +219,7 @@ bool g_pendingStopNewOrders = false; // Pending action after next close-all
 bool g_pendingNoWork = false;    // Pending action after next close-all
 bool g_showLabels = true;        // If true: show all labels, if false: hide for performance
 bool g_showNextLevelLines = false; // If true: show and calculate next level lines (toggle via button)
+bool g_showLevelLines = false;    // If true: show 5 level lines above and below current price (toggle via button)
 bool g_showOrderLabels = false;  // If true: show order open/close labels on chart
 int  g_currentDebugLevel = 0;    // Current debug level (modifiable at runtime, initialized from DebugLevel input)
 int  g_singleTrailMode = 2;      // Single trail sensitivity: 0=Tight, 1=Normal, 2=Loose

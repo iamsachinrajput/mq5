@@ -31,6 +31,7 @@ int OnInit() {
    g_singleTrailMode = InitialSingleTrailMode;
    g_totalTrailMode = InitialTotalTrailMode;
    g_showMainButtons = InitialShowButtons;
+   g_showLevelLines = InitialShowLevelLines;
    g_tradeLoggingActive = EnableTradeLogging;
    
    Log(1, StringFormat("EA Init: Magic=%d Gap=%.1f Lot=%.2f", Magic, GapInPoints, BaseLotSize));
@@ -161,6 +162,11 @@ void OnTick() {
    
    // Always update display (will show or hide based on g_showLabels)
    UpdateCurrentProfitVline();
+   
+   // Update level lines if enabled
+   if(g_showLevelLines) {
+      DrawLevelLines();
+   }
 }
 
 //============================= EA DEINITIALIZATION ================//
@@ -177,6 +183,9 @@ void OnDeinit(const int reason) {
    ObjectDelete(0, "BtnTotalTrail");
    ObjectDelete(0, "BtnTrailMethod");
    ObjectDelete(0, "BtnVisibilityControls");  // Permanent control button
+   
+   // Clean up level lines
+   RemoveLevelLines();
    ObjectDelete(0, "total_trail");  // Total trail floor line
    ObjectDelete(0, "CenterProfitLabel");
    ObjectDelete(0, "CenterCycleLabel");

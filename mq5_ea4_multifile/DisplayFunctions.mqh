@@ -3,6 +3,76 @@
 //| Display, UI, buttons, labels, and chart event handling          |
 //+------------------------------------------------------------------+
 
+//============================= LEVEL LINES DISPLAY =======================//
+
+// Draw level lines (5 above and 5 below current price, including current)
+void DrawLevelLines() {
+   if(!g_showLevelLines) return;
+   
+   double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   int currentLevel = PriceLevelIndex(currentPrice, g_adaptiveGap);
+   
+   // Draw 11 lines: current level, 5 above, 5 below
+   for(int i = -5; i <= 5; i++) {
+      int level = currentLevel + i;
+      double levelPrice = LevelPrice(level, g_adaptiveGap);
+      
+      // Create horizontal line
+      string lineName = StringFormat("LevelLine_%d", level);
+      if(ObjectFind(0, lineName) < 0) {
+         ObjectCreate(0, lineName, OBJ_HLINE, 0, 0, levelPrice);
+      }
+      ObjectSetDouble(0, lineName, OBJPROP_PRICE, levelPrice);
+      
+      // Set line properties
+      color lineColor = (i == 0) ? clrYellow : clrDarkSlateGray;
+      int lineWidth = (i == 0) ? 2 : 1;
+      ObjectSetInteger(0, lineName, OBJPROP_COLOR, lineColor);
+      ObjectSetInteger(0, lineName, OBJPROP_WIDTH, lineWidth);
+      ObjectSetInteger(0, lineName, OBJPROP_STYLE, STYLE_DOT);
+      ObjectSetInteger(0, lineName, OBJPROP_BACK, true);
+      ObjectSetInteger(0, lineName, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, lineName, OBJPROP_HIDDEN, true);
+      
+      // Create text label
+      string labelName = StringFormat("LevelLabel_%d", level);
+      if(ObjectFind(0, labelName) < 0) {
+         ObjectCreate(0, labelName, OBJ_TEXT, 0, TimeCurrent(), levelPrice);
+      }
+      ObjectSetInteger(0, labelName, OBJPROP_TIME, TimeCurrent());
+      ObjectSetDouble(0, labelName, OBJPROP_PRICE, levelPrice);
+      ObjectSetString(0, labelName, OBJPROP_TEXT, StringFormat("L%d", level));
+      ObjectSetInteger(0, labelName, OBJPROP_COLOR, lineColor);
+      ObjectSetInteger(0, labelName, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, labelName, OBJPROP_FONT, "Arial");
+      ObjectSetInteger(0, labelName, OBJPROP_ANCHOR, ANCHOR_LEFT);
+      ObjectSetInteger(0, labelName, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, labelName, OBJPROP_HIDDEN, true);
+   }
+   
+   ChartRedraw(0);
+}
+
+// Remove all level lines and labels
+void RemoveLevelLines() {
+   // Remove all objects starting with "LevelLine_" or "LevelLabel_"
+   for(int i = ObjectsTotal(0, 0, OBJ_HLINE) - 1; i >= 0; i--) {
+      string objName = ObjectName(0, i, 0, OBJ_HLINE);
+      if(StringFind(objName, "LevelLine_") >= 0) {
+         ObjectDelete(0, objName);
+      }
+   }
+   
+   for(int i = ObjectsTotal(0, 0, OBJ_TEXT) - 1; i >= 0; i--) {
+      string objName = ObjectName(0, i, 0, OBJ_TEXT);
+      if(StringFind(objName, "LevelLabel_") >= 0) {
+         ObjectDelete(0, objName);
+      }
+   }
+   
+   ChartRedraw(0);
+}
+
 //============================= VISIBILITY CONTROL BUTTON (ALWAYS VISIBLE) =======================//
 
 void CreateVisibilityControlButton() {
@@ -256,12 +326,30 @@ void CreateButtons() {
       ObjectSetInteger(0, btn13Name, OBJPROP_HIDDEN, false);
    }
    
-   // Button 14: Print Stats (LESS CRITICAL)
+   // Button 14: Level Lines Toggle
+   string btn14Name = "BtnLevelLines";
+   if(ObjectFind(0, btn14Name) < 0) {
+      ObjectCreate(0, btn14Name, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, btn14Name, OBJPROP_XDISTANCE, rightMargin);
+      ObjectSetInteger(0, btn14Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 14);
+      ObjectSetInteger(0, btn14Name, OBJPROP_XSIZE, buttonWidth);
+      ObjectSetInteger(0, btn14Name, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetInteger(0, btn14Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetString(0, btn14Name, OBJPROP_TEXT, "Levels: OFF");
+      ObjectSetInteger(0, btn14Name, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, btn14Name, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, btn14Name, OBJPROP_BGCOLOR, clrDarkGray);
+      ObjectSetInteger(0, btn14Name, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btn14Name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, btn14Name, OBJPROP_HIDDEN, false);
+   }
+   
+   // Button 15: Print Stats (LESS CRITICAL)
    string btn6Name = "BtnPrintStats";
    if(ObjectFind(0, btn6Name) < 0) {
       ObjectCreate(0, btn6Name, OBJ_BUTTON, 0, 0, 0);
       ObjectSetInteger(0, btn6Name, OBJPROP_XDISTANCE, rightMargin);
-      ObjectSetInteger(0, btn6Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 14);
+      ObjectSetInteger(0, btn6Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 15);
       ObjectSetInteger(0, btn6Name, OBJPROP_XSIZE, buttonWidth);
       ObjectSetInteger(0, btn6Name, OBJPROP_YSIZE, buttonHeight);
       ObjectSetInteger(0, btn6Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
@@ -637,6 +725,18 @@ void UpdateButtonStates() {
    ObjectSetInteger(0, btnLogging, OBJPROP_COLOR, clrWhite);
    ObjectSetInteger(0, btnLogging, OBJPROP_STATE, false);
    
+   // Update Button: Level Lines Toggle
+   string btnLevels = "BtnLevelLines";
+   if(g_showLevelLines) {
+      ObjectSetString(0, btnLevels, OBJPROP_TEXT, "Levels: ON");
+      ObjectSetInteger(0, btnLevels, OBJPROP_BGCOLOR, clrDarkGreen);
+   } else {
+      ObjectSetString(0, btnLevels, OBJPROP_TEXT, "Levels: OFF");
+      ObjectSetInteger(0, btnLevels, OBJPROP_BGCOLOR, clrDarkGray);
+   }
+   ObjectSetInteger(0, btnLevels, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, btnLevels, OBJPROP_STATE, false);
+   
    ChartRedraw(0);
 }
 
@@ -972,7 +1072,7 @@ void ApplyVisibilitySettings() {
       "BtnStopNewOrders", "BtnNoWork", "BtnCloseAll", "BtnResetCounters",
       "BtnCloseProfit", "BtnSingleTrail", "BtnTotalTrail", "BtnToggleLabels", 
       "BtnOrderLabels", "BtnToggleNextLines", "BtnTrailMethod", "BtnHistoryMode", 
-      "BtnDebugLevel", "BtnPrintStats", "BtnToggleVLines", "BtnToggleHLines", "BtnTradeLogging"
+      "BtnDebugLevel", "BtnPrintStats", "BtnToggleVLines", "BtnToggleHLines", "BtnTradeLogging", "BtnLevelLines"
    };
    
    if(g_showMainButtons) {
@@ -1367,6 +1467,18 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          }
          UpdateButtonStates();
          Log(1, StringFormat("Trade Logging: %s", g_tradeLoggingActive ? "ENABLED" : "DISABLED"));
+      }
+      
+      // Button: Level Lines Toggle
+      if(sparam == "BtnLevelLines") {
+         g_showLevelLines = !g_showLevelLines;
+         if(g_showLevelLines) {
+            DrawLevelLines();
+         } else {
+            RemoveLevelLines();
+         }
+         UpdateButtonStates();
+         Log(1, StringFormat("Level Lines: %s", g_showLevelLines ? "SHOWN" : "HIDDEN"));
       }
       
       // Handle Debug Level selections
