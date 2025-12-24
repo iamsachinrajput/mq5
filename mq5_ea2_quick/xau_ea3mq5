@@ -8,9 +8,9 @@
 //============================= INPUTS =============================//
 // Core Trading Parameters
 input int    Magic = 12345;               // Magic number
-input double GapInPoints = 1000;         // Gap xau100 btc1000
+input double GapInPoints = 100;         // Gap xau100 btc1000
 input double BaseLotSize = 0.01;          // Starting lot size
-input int    DebugLevel = 3;              // Debug level (0=off, 1=critical, 2=info, 3=verbose)
+input int    DebugLevel = 2;              // Debug level (0=off, 1=critical, 2=info, 3=verbose)
 
 // Lot Calculation Methods (applied per scenario)
 enum ENUM_LOT_CALC_METHOD {
@@ -19,10 +19,12 @@ enum ENUM_LOT_CALC_METHOD {
    LOT_CALC_GPO = 2,            // Base * GPO (orders in profit)
    LOT_CALC_GLO_GPO_DIFF = 3,   // Base * abs(GLO - GPO)
    LOT_CALC_TOTAL_ORDERS = 4,   // Base * total order count
-   LOT_CALC_BUY_SELL_DIFF = 5   // Base * abs(buy count - sell count)
+   LOT_CALC_BUY_SELL_DIFF = 5,  // Base * abs(buy count - sell count)
+   LOT_CALC_IGNORE = 99         // Ignore this case (do not apply)
 };
 
 // Scenario-Based Lot Sizing
+input string LotCalc_PrioritySequence = "1,2,3,4,5,6,7";              // Priority sequence for overlapping scenarios (comma-separated: 1-7)
 input ENUM_LOT_CALC_METHOD LotCalc_Boundary = LOT_CALC_BASE;          // Case 1: Boundary orders (topmost BUY, bottommost SELL)
 input ENUM_LOT_CALC_METHOD LotCalc_Direction = LOT_CALC_GLO;          // Case 2: Direction orders (towards movement, opposite to accumulation)
 input ENUM_LOT_CALC_METHOD LotCalc_Counter = LOT_CALC_BASE;           // Case 3: Counter-direction orders (against movement)
@@ -106,7 +108,7 @@ input double HybridBalanceFactor = 2.0;     // Imbalance factor for smart switch
 input int    HybridCountDiffThreshold = 5;  // Order count difference threshold (for HYBRID_COUNT_DIFF)
 
 // Adaptive Gap
-input bool   UseAdaptiveGap = true;       // Use ATR-based adaptive gap
+input bool   UseAdaptiveGap = false;       // Use ATR-based adaptive gap
  int    ATRPeriod = 14;              // ATR period for adaptive gap
  double ATRMultiplier = 1.5;         // ATR multiplier
  double MinGapPoints = GapInPoints/2;         // Minimum gap points
@@ -114,10 +116,10 @@ double MaxGapPoints = GapInPoints*1.10;        // Maximum gap points
 
 // Display Settings
 input bool   ShowLabels = true;         // Show chart labels (disable for performance)
-input bool   ShowOrderLabels = false;   // Show order open/close labels on chart
+input bool   ShowOrderLabels = true;   // Show order open/close labels on chart
 input bool   ShowNextLevelLines = false; // Show next level lines on chart
 input double MaxLossVlineThreshold = 100.0;  // Min loss to show max loss vline (0 = always show)
-input int    VlineOffsetCandles = 10;   // Current profit vline offset in candles from current time
+input int    VlineOffsetCandles = 3;   // Current profit vline offset in candles from current time
 
 // Button Initial States
 input bool   InitialStopNewOrders = false; // Initial state for Stop New Orders button
@@ -133,11 +135,27 @@ enum ENUM_NO_POSITIONS_ACTION {
    NO_POS_NEAREST_LEVEL = 1,  // Open single order at nearest level
    NO_POS_BOTH_LEVELS = 2     // Open both BUY and SELL at nearest levels
 };
-input ENUM_NO_POSITIONS_ACTION NoPositionsAction = NO_POS_NONE; // Action when no open positions
+input ENUM_NO_POSITIONS_ACTION NoPositionsAction = NO_POS_NEAREST_LEVEL; // Action when no open positions
 
 // Button Positioning
 input int    BtnXDistance = 200;         // Button X distance from right edge
 input int    BtnYDistance = 50;         // Button Y distance from top edge
+
+// Control Buttons (Show/Hide) Positioning
+enum ENUM_CTRL_CORNER {
+   CTRL_CORNER_RIGHT_LOWER = 0,  // Right Lower
+   CTRL_CORNER_RIGHT_UPPER = 1,  // Right Upper
+   CTRL_CORNER_LEFT_LOWER = 2,   // Left Lower
+   CTRL_CORNER_LEFT_UPPER = 3    // Left Upper
+};
+input ENUM_CTRL_CORNER CtrlButtonCorner = CTRL_CORNER_RIGHT_LOWER; // Control buttons corner position
+input int    CtrlBtnXDistance = 10;      // Control buttons X distance from edge
+input int    CtrlBtnYDistance = 10;      // Control buttons Y distance from edge
+
+// Selection Panel Positioning (exact position like control buttons)
+input ENUM_CTRL_CORNER CtrlPanelCorner = CTRL_CORNER_RIGHT_UPPER; // Panel corner position
+input int    CtrlPanelXDistance = 110;   // Panel X distance from edge
+input int    CtrlPanelYDistance = 50;    // Panel Y distance from edge
 
 // Center Panel Display
 input int    CenterPanelFontSize = 36;   // Font size for main center label (Overall Profit & Net Lots)
@@ -154,6 +172,9 @@ CTrade trade;
 double g_originPrice = 0.0;
 double g_adaptiveGap = 0.0;
 
+// Lot Calculation Priority Sequence
+int g_lotCalcPriority[7];        // Parsed priority sequence from input (1-7)
+
 // Position Stats
 int    g_buyCount = 0;
 int    g_sellCount = 0;
@@ -163,6 +184,10 @@ double g_netLots = 0.0;
 double g_totalProfit = 0.0;
 double g_nextBuyLot = 0.01;
 double g_nextSellLot = 0.01;
+int    g_nextBuyScenario = 0;       // Store current buy scenario index
+int    g_nextSellScenario = 0;      // Store current sell scenario index
+string g_nextBuyMethod = "Base";    // Store current buy method name
+string g_nextSellMethod = "Base";   // Store current sell method name
 int    g_orders_in_loss = 0;    // Count of orders currently in loss (for GLO method)
 int    g_orders_in_profit = 0;  // Count of orders currently in profit (for GPO method)
 
@@ -186,7 +211,32 @@ int  g_currentDebugLevel = 0;    // Current debug level (modifiable at runtime, 
 int  g_singleTrailMode = 2;      // Single trail sensitivity: 0=Tight, 1=Normal, 2=Loose
 int  g_totalTrailMode = 2;       // Total trail sensitivity: 0=Tight, 1=Normal, 2=Loose
 int  g_currentTrailMethod = 9;   // Current trail method (modifiable at runtime, initialized from SingleTrailMethod input)
+int  g_historyDisplayMode = 3;   // History display mode: 0=Overall, 1=CurSymAllMagic, 2=CurSymCurMagic, 3=PerSymbol
 string g_activeSelectionPanel = ""; // Track active selection panel (empty = none active)
+
+// Master visibility controls (controlled by bottom-right buttons, never hidden)
+bool g_showMainButtons = true;   // Show/hide main control buttons (top-right)
+bool g_showInfoLabels = true;    // Show/hide info panel labels (left side)
+bool g_showOrderLabelsCtrl = true; // Show/hide order labels on chart
+bool g_showVLines = true;        // Show/hide vertical lines
+bool g_showHLines = true;        // Show/hide horizontal lines
+
+// Individual label visibility controls
+bool g_showCurrentProfitLabel = true;
+bool g_showPositionDetailsLabel = true;
+bool g_showSpreadEquityLabel = true;
+bool g_showNextLotCalcLabel = true;
+bool g_showSingleTrailLabel = true;
+bool g_showGroupTrailLabel = true;
+bool g_showTotalTrailLabel = true;
+bool g_showLevelInfoLabel = true;
+bool g_showNearbyOrdersLabel = true;
+bool g_showLast5ClosesLabel = true;
+bool g_showHistoryDisplayLabel = true;
+bool g_showCenterProfitLabel = true;
+bool g_showCenterCycleLabel = true;
+bool g_showCenterBookedLabel = true;
+bool g_showCenterNetLotsLabel = true;
 
 // Total Trailing State
 bool   g_trailActive = false;
@@ -459,14 +509,17 @@ string GetNearbyOrdersText(int centerLevel, int maxDisplay) {
       // Create array to sort orders by level
       int levels[];
       string types[];
+      double lots[];
       ArrayResize(levels, validOrderCount);
       ArrayResize(types, validOrderCount);
+      ArrayResize(lots, validOrderCount);
       
       int idx = 0;
       for(int i = 0; i < g_orderCount; i++) {
          if(g_orders[i].isValid) {
             levels[idx] = g_orders[i].level;
             types[idx] = (g_orders[i].type == POSITION_TYPE_BUY) ? "B" : "S";
+            lots[idx] = g_orders[i].lotSize;
             idx++;
          }
       }
@@ -482,6 +535,10 @@ string GetNearbyOrdersText(int centerLevel, int maxDisplay) {
                string tempType = types[j];
                types[j] = types[j + 1];
                types[j + 1] = tempType;
+               
+               double tempLot = lots[j];
+               lots[j] = lots[j + 1];
+               lots[j + 1] = tempLot;
             }
          }
       }
@@ -489,7 +546,7 @@ string GetNearbyOrdersText(int centerLevel, int maxDisplay) {
       // Build result string
       for(int i = 0; i < validOrderCount; i++) {
          if(result != "") result += " ";
-         result += StringFormat("%d%s", levels[i], types[i]);
+         result += StringFormat("%d%s%.2f", levels[i], types[i], lots[i]);
       }
    } else {
       // 10 or more orders: show only nearest 10 (5 up, 5 down)
@@ -503,7 +560,7 @@ string GetNearbyOrdersText(int centerLevel, int maxDisplay) {
             if(g_orders[i].isValid && g_orders[i].level == checkLevel) {
                string typeStr = (g_orders[i].type == POSITION_TYPE_BUY) ? "B" : "S";
                if(result != "") result += " ";
-               result += StringFormat("%d%s", checkLevel, typeStr);
+               result += StringFormat("%d%s%.2f", checkLevel, typeStr, g_orders[i].lotSize);
                break;
             }
          }
@@ -643,7 +700,7 @@ void CreateButtons() {
    if(ObjectFind(0, btn10Name) < 0) {
       ObjectCreate(0, btn10Name, OBJ_BUTTON, 0, 0, 0);
       ObjectSetInteger(0, btn10Name, OBJPROP_XDISTANCE, rightMargin);
-      ObjectSetInteger(0, btn10Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 7);
+      ObjectSetInteger(0, btn10Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 8);
       ObjectSetInteger(0, btn10Name, OBJPROP_XSIZE, buttonWidth);
       ObjectSetInteger(0, btn10Name, OBJPROP_YSIZE, buttonHeight);
       ObjectSetInteger(0, btn10Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
@@ -661,7 +718,7 @@ void CreateButtons() {
    if(ObjectFind(0, btn8Name) < 0) {
       ObjectCreate(0, btn8Name, OBJ_BUTTON, 0, 0, 0);
       ObjectSetInteger(0, btn8Name, OBJPROP_XDISTANCE, rightMargin);
-      ObjectSetInteger(0, btn8Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 8);
+      ObjectSetInteger(0, btn8Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 9);
       ObjectSetInteger(0, btn8Name, OBJPROP_XSIZE, buttonWidth);
       ObjectSetInteger(0, btn8Name, OBJPROP_YSIZE, buttonHeight);
       ObjectSetInteger(0, btn8Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
@@ -674,12 +731,12 @@ void CreateButtons() {
       ObjectSetInteger(0, btn8Name, OBJPROP_HIDDEN, false);
    }
    
-   // Button 10: Total Trail Mode (TRAIL)
+   // Button 11: Total Trail Mode (TRAIL)
    string btn9Name = "BtnTotalTrail";
    if(ObjectFind(0, btn9Name) < 0) {
       ObjectCreate(0, btn9Name, OBJ_BUTTON, 0, 0, 0);
       ObjectSetInteger(0, btn9Name, OBJPROP_XDISTANCE, rightMargin);
-      ObjectSetInteger(0, btn9Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 9);
+      ObjectSetInteger(0, btn9Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 11);
       ObjectSetInteger(0, btn9Name, OBJPROP_XSIZE, buttonWidth);
       ObjectSetInteger(0, btn9Name, OBJPROP_YSIZE, buttonHeight);
       ObjectSetInteger(0, btn9Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
@@ -692,12 +749,12 @@ void CreateButtons() {
       ObjectSetInteger(0, btn9Name, OBJPROP_HIDDEN, false);
    }
    
-   // Button 11: Debug Level (LESS CRITICAL)
+   // Button 12: Debug Level (LESS CRITICAL)
    string btn7Name = "BtnDebugLevel";
    if(ObjectFind(0, btn7Name) < 0) {
       ObjectCreate(0, btn7Name, OBJ_BUTTON, 0, 0, 0);
       ObjectSetInteger(0, btn7Name, OBJPROP_XDISTANCE, rightMargin);
-      ObjectSetInteger(0, btn7Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 10);
+      ObjectSetInteger(0, btn7Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 12);
       ObjectSetInteger(0, btn7Name, OBJPROP_XSIZE, buttonWidth);
       ObjectSetInteger(0, btn7Name, OBJPROP_YSIZE, buttonHeight);
       ObjectSetInteger(0, btn7Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
@@ -710,12 +767,12 @@ void CreateButtons() {
       ObjectSetInteger(0, btn7Name, OBJPROP_HIDDEN, false);
    }
    
-   // Button 12: Print Stats (LESS CRITICAL)
+   // Button 13: Print Stats (LESS CRITICAL)
    string btn6Name = "BtnPrintStats";
    if(ObjectFind(0, btn6Name) < 0) {
       ObjectCreate(0, btn6Name, OBJ_BUTTON, 0, 0, 0);
       ObjectSetInteger(0, btn6Name, OBJPROP_XDISTANCE, rightMargin);
-      ObjectSetInteger(0, btn6Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 11);
+      ObjectSetInteger(0, btn6Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 13);
       ObjectSetInteger(0, btn6Name, OBJPROP_XSIZE, buttonWidth);
       ObjectSetInteger(0, btn6Name, OBJPROP_YSIZE, buttonHeight);
       ObjectSetInteger(0, btn6Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
@@ -728,10 +785,106 @@ void CreateButtons() {
       ObjectSetInteger(0, btn6Name, OBJPROP_HIDDEN, false);
    }
    
+   // Button 14: History Display Mode
+   string btnHistName = "BtnHistoryMode";
+   if(ObjectFind(0, btnHistName) < 0) {
+      ObjectCreate(0, btnHistName, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, btnHistName, OBJPROP_XDISTANCE, rightMargin);
+      ObjectSetInteger(0, btnHistName, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 14);
+      ObjectSetInteger(0, btnHistName, OBJPROP_XSIZE, buttonWidth);
+      ObjectSetInteger(0, btnHistName, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetInteger(0, btnHistName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetString(0, btnHistName, OBJPROP_TEXT, "Hist:Overall");
+      ObjectSetInteger(0, btnHistName, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, btnHistName, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, btnHistName, OBJPROP_BGCOLOR, clrDarkGreen);
+      ObjectSetInteger(0, btnHistName, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btnHistName, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, btnHistName, OBJPROP_HIDDEN, false);
+   }
+   
+   // Button 15: Toggle VLines
+   string btnVLinesName = "BtnToggleVLines";
+   if(ObjectFind(0, btnVLinesName) < 0) {
+      ObjectCreate(0, btnVLinesName, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, btnVLinesName, OBJPROP_XDISTANCE, rightMargin);
+      ObjectSetInteger(0, btnVLinesName, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 15);
+      ObjectSetInteger(0, btnVLinesName, OBJPROP_XSIZE, buttonWidth);
+      ObjectSetInteger(0, btnVLinesName, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetInteger(0, btnVLinesName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetString(0, btnVLinesName, OBJPROP_TEXT, "VLines: ON");
+      ObjectSetInteger(0, btnVLinesName, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, btnVLinesName, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, btnVLinesName, OBJPROP_BGCOLOR, clrDarkGreen);
+      ObjectSetInteger(0, btnVLinesName, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btnVLinesName, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, btnVLinesName, OBJPROP_HIDDEN, false);
+   }
+   
+   // Button 16: Toggle HLines
+   string btnHLinesName = "BtnToggleHLines";
+   if(ObjectFind(0, btnHLinesName) < 0) {
+      ObjectCreate(0, btnHLinesName, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, btnHLinesName, OBJPROP_XDISTANCE, rightMargin);
+      ObjectSetInteger(0, btnHLinesName, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 16);
+      ObjectSetInteger(0, btnHLinesName, OBJPROP_XSIZE, buttonWidth);
+      ObjectSetInteger(0, btnHLinesName, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetInteger(0, btnHLinesName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetString(0, btnHLinesName, OBJPROP_TEXT, "HLines: ON");
+      ObjectSetInteger(0, btnHLinesName, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, btnHLinesName, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, btnHLinesName, OBJPROP_BGCOLOR, clrDarkGreen);
+      ObjectSetInteger(0, btnHLinesName, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btnHLinesName, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, btnHLinesName, OBJPROP_HIDDEN, false);
+   }
+   
+   // ==== PERMANENT CONTROL BUTTON (Always Visible) ====
+   // This button is NEVER hidden by any control and always remains visible
+   int ctrlButtonWidth = 100;
+   int ctrlButtonHeight = 30;
+   
+   // Determine corner based on input
+   ENUM_BASE_CORNER ctrlCorner;
+   switch(CtrlButtonCorner) {
+      case CTRL_CORNER_RIGHT_LOWER: ctrlCorner = CORNER_RIGHT_LOWER; break;
+      case CTRL_CORNER_RIGHT_UPPER: ctrlCorner = CORNER_RIGHT_UPPER; break;
+      case CTRL_CORNER_LEFT_LOWER:  ctrlCorner = CORNER_LEFT_LOWER; break;
+      case CTRL_CORNER_LEFT_UPPER:  ctrlCorner = CORNER_LEFT_UPPER; break;
+      default: ctrlCorner = CORNER_RIGHT_LOWER;
+   }
+   
+   // Button: Visibility Controls (Show/Hide)
+   string btnVisCtrl = "BtnVisibilityControls";
+   if(ObjectFind(0, btnVisCtrl) < 0) {
+      ObjectCreate(0, btnVisCtrl, OBJ_BUTTON, 0, 0, 0);
+   }
+   ObjectSetInteger(0, btnVisCtrl, OBJPROP_XDISTANCE, CtrlBtnXDistance);
+   ObjectSetInteger(0, btnVisCtrl, OBJPROP_YDISTANCE, CtrlBtnYDistance);
+   ObjectSetInteger(0, btnVisCtrl, OBJPROP_XSIZE, ctrlButtonWidth);
+   ObjectSetInteger(0, btnVisCtrl, OBJPROP_YSIZE, ctrlButtonHeight);
+   ObjectSetString(0, btnVisCtrl, OBJPROP_TEXT, g_showMainButtons ? "HIDE BUTTONS" : "SHOW BUTTONS");
+   ObjectSetInteger(0, btnVisCtrl, OBJPROP_CORNER, ctrlCorner);
+   ObjectSetInteger(0, btnVisCtrl, OBJPROP_ANCHOR, ctrlCorner);
+   ObjectSetInteger(0, btnVisCtrl, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, btnVisCtrl, OBJPROP_BGCOLOR, g_showMainButtons ? clrDarkRed : clrDarkGreen);
+   ObjectSetInteger(0, btnVisCtrl, OBJPROP_FONTSIZE, 10);
+   ObjectSetInteger(0, btnVisCtrl, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, btnVisCtrl, OBJPROP_HIDDEN, false);
+   ObjectSetInteger(0, btnVisCtrl, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+   
    UpdateButtonStates();
 }
 
 void UpdateButtonStates() {
+   // Ensure permanent control button is always visible and update its state
+   if(ObjectFind(0, "BtnVisibilityControls") >= 0) {
+      ObjectSetInteger(0, "BtnVisibilityControls", OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+      ObjectSetInteger(0, "BtnVisibilityControls", OBJPROP_HIDDEN, false);
+      ObjectSetString(0, "BtnVisibilityControls", OBJPROP_TEXT, g_showMainButtons ? "HIDE BUTTONS" : "SHOW BUTTONS");
+      ObjectSetInteger(0, "BtnVisibilityControls", OBJPROP_BGCOLOR, g_showMainButtons ? clrDarkRed : clrDarkGreen);
+   }
+   
    // Update Button 1: Stop New Orders
    string btn1Name = "BtnStopNewOrders";
    if(g_stopNewOrders) {
@@ -893,6 +1046,30 @@ void UpdateButtonStates() {
    ObjectSetInteger(0, btn9Name, OBJPROP_COLOR, clrWhite);
    ObjectSetInteger(0, btn9Name, OBJPROP_STATE, false);
    
+   // Update History Mode button
+   switch(g_historyDisplayMode) {
+      case 0:
+         ObjectSetString(0, "BtnHistoryMode", OBJPROP_TEXT, "Hist:Overall");
+         ObjectSetInteger(0, "BtnHistoryMode", OBJPROP_BGCOLOR, clrDarkGreen);
+         break;
+      case 1:
+         ObjectSetString(0, "BtnHistoryMode", OBJPROP_TEXT, "Hist:SymAll");
+         ObjectSetInteger(0, "BtnHistoryMode", OBJPROP_BGCOLOR, clrDarkCyan);
+         break;
+      case 2:
+         ObjectSetString(0, "BtnHistoryMode", OBJPROP_TEXT, "Hist:SymMag");
+         ObjectSetInteger(0, "BtnHistoryMode", OBJPROP_BGCOLOR, clrDarkOrange);
+         break;
+      case 3:
+         ObjectSetString(0, "BtnHistoryMode", OBJPROP_TEXT, "Hist:PerSym");
+         ObjectSetInteger(0, "BtnHistoryMode", OBJPROP_BGCOLOR, clrDarkViolet);
+         break;
+      default:
+         ObjectSetString(0, "BtnHistoryMode", OBJPROP_TEXT, "Hist:Overall");
+         ObjectSetInteger(0, "BtnHistoryMode", OBJPROP_BGCOLOR, clrDarkGreen);
+         break;
+   }
+   
    // Update Button 10: Trail Method Strategy
    string btn10Name = "BtnTrailMethod";
    string methodText = "";
@@ -968,6 +1145,30 @@ void UpdateButtonStates() {
    ObjectSetInteger(0, btn12Name, OBJPROP_BGCOLOR, clrDarkOrange);
    ObjectSetInteger(0, btn12Name, OBJPROP_COLOR, clrWhite);
    ObjectSetInteger(0, btn12Name, OBJPROP_STATE, false);
+   
+   // Update Button 15: Toggle VLines
+   string btnVLines = "BtnToggleVLines";
+   if(g_showVLines) {
+      ObjectSetString(0, btnVLines, OBJPROP_TEXT, "VLines: ON");
+      ObjectSetInteger(0, btnVLines, OBJPROP_BGCOLOR, clrDarkGreen);
+   } else {
+      ObjectSetString(0, btnVLines, OBJPROP_TEXT, "VLines: OFF");
+      ObjectSetInteger(0, btnVLines, OBJPROP_BGCOLOR, clrDarkGray);
+   }
+   ObjectSetInteger(0, btnVLines, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, btnVLines, OBJPROP_STATE, false);
+   
+   // Update Button 16: Toggle HLines
+   string btnHLines = "BtnToggleHLines";
+   if(g_showHLines) {
+      ObjectSetString(0, btnHLines, OBJPROP_TEXT, "HLines: ON");
+      ObjectSetInteger(0, btnHLines, OBJPROP_BGCOLOR, clrDarkGreen);
+   } else {
+      ObjectSetString(0, btnHLines, OBJPROP_TEXT, "HLines: OFF");
+      ObjectSetInteger(0, btnHLines, OBJPROP_BGCOLOR, clrDarkGray);
+   }
+   ObjectSetInteger(0, btnHLines, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, btnHLines, OBJPROP_STATE, false);
    
    ChartRedraw(0);
 }
@@ -1103,6 +1304,145 @@ void CreateSelectionPanel(string panelType) {
          yOffset += buttonHeight + 5;
       }
    }
+   else if(panelType == "HistoryMode") {
+      g_activeSelectionPanel = "HistoryMode";
+      ObjectSetInteger(0, bgName, OBJPROP_YSIZE, 4 * (buttonHeight + 5) + 20);
+      
+      string options[] = {
+         "Overall (All/All)", "CurSym (AllMagic)", "CurSym (CurMagic)", "Per-Symbol"
+      };
+      color colors[] = {clrDarkGreen, clrDarkCyan, clrDarkOrange, clrDarkViolet};
+      
+      for(int i = 0; i < 4; i++) {
+         string btnName = StringFormat("SelectHistory_%d", i);
+         ObjectCreate(0, btnName, OBJ_BUTTON, 0, 0, 0);
+         ObjectSetInteger(0, btnName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+         ObjectSetInteger(0, btnName, OBJPROP_XDISTANCE, rightMargin + buttonWidth + 20);
+         ObjectSetInteger(0, btnName, OBJPROP_YDISTANCE, topMargin + 10 * (buttonHeight + verticalGap) + yOffset);
+         ObjectSetInteger(0, btnName, OBJPROP_XSIZE, 160);
+         ObjectSetInteger(0, btnName, OBJPROP_YSIZE, buttonHeight);
+         ObjectSetString(0, btnName, OBJPROP_TEXT, options[i]);
+         ObjectSetInteger(0, btnName, OBJPROP_BGCOLOR, colors[i]);
+         ObjectSetInteger(0, btnName, OBJPROP_COLOR, clrWhite);
+         ObjectSetInteger(0, btnName, OBJPROP_FONTSIZE, 9);
+         ObjectSetInteger(0, btnName, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, btnName, OBJPROP_HIDDEN, true);
+         yOffset += buttonHeight + 5;
+      }
+   }
+   
+   // Label Control Panel - Individual label show/hide
+   else if(panelType == "LabelControl") {
+      g_activeSelectionPanel = "LabelControl";
+      
+      string labelTexts[] = {
+         "CurrentProfit", "PositionDetails", "SpreadEquity", "NextLotCalc",
+         "SingleTrail", "GroupTrail", "TotalTrail", "LevelInfo",
+         "NearbyOrders", "Last5Closes", "HistoryDisplay",
+         "CenterProfit", "CenterCycle", "CenterBooked", "CenterNetLots"
+      };
+      bool labelStates[] = {
+         g_showCurrentProfitLabel, g_showPositionDetailsLabel, g_showSpreadEquityLabel, g_showNextLotCalcLabel,
+         g_showSingleTrailLabel, g_showGroupTrailLabel, g_showTotalTrailLabel, g_showLevelInfoLabel,
+         g_showNearbyOrdersLabel, g_showLast5ClosesLabel, g_showHistoryDisplayLabel,
+         g_showCenterProfitLabel, g_showCenterCycleLabel, g_showCenterBookedLabel, g_showCenterNetLotsLabel
+      };
+      
+      int labelCount = 15;
+      // Panel height: 1 ALL button + 15 label buttons + padding
+      ObjectSetInteger(0, bgName, OBJPROP_YSIZE, (labelCount + 1) * (buttonHeight + 5) + 20);
+      
+      // Create ALL button at the top
+      string btnAllName = "SelectLabel_ALL";
+      // Check if all labels are currently shown
+      bool allVisible = g_showCurrentProfitLabel && g_showPositionDetailsLabel && g_showSpreadEquityLabel && g_showNextLotCalcLabel &&
+                        g_showSingleTrailLabel && g_showGroupTrailLabel && g_showTotalTrailLabel && g_showLevelInfoLabel &&
+                        g_showNearbyOrdersLabel && g_showLast5ClosesLabel && g_showHistoryDisplayLabel &&
+                        g_showCenterProfitLabel && g_showCenterCycleLabel && g_showCenterBookedLabel && g_showCenterNetLotsLabel;
+      
+      ObjectCreate(0, btnAllName, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, btnAllName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetInteger(0, btnAllName, OBJPROP_XDISTANCE, rightMargin + buttonWidth + 20);
+      ObjectSetInteger(0, btnAllName, OBJPROP_YDISTANCE, topMargin + yOffset);
+      ObjectSetInteger(0, btnAllName, OBJPROP_XSIZE, 160);
+      ObjectSetInteger(0, btnAllName, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetString(0, btnAllName, OBJPROP_TEXT, allVisible ? "✓ ALL" : "✗ ALL");
+      ObjectSetInteger(0, btnAllName, OBJPROP_BGCOLOR, allVisible ? clrDarkGreen : clrDarkRed);
+      ObjectSetInteger(0, btnAllName, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btnAllName, OBJPROP_FONTSIZE, 10);
+      ObjectSetInteger(0, btnAllName, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, btnAllName, OBJPROP_HIDDEN, true);
+      yOffset += buttonHeight + 5;
+      
+      for(int i = 0; i < labelCount; i++) {
+         string btnName = StringFormat("SelectLabel_%d", i);
+         ObjectCreate(0, btnName, OBJ_BUTTON, 0, 0, 0);
+         ObjectSetInteger(0, btnName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+         ObjectSetInteger(0, btnName, OBJPROP_XDISTANCE, rightMargin + buttonWidth + 20);
+         ObjectSetInteger(0, btnName, OBJPROP_YDISTANCE, topMargin + yOffset);
+         ObjectSetInteger(0, btnName, OBJPROP_XSIZE, 160);
+         ObjectSetInteger(0, btnName, OBJPROP_YSIZE, buttonHeight);
+         string btnText = labelStates[i] ? ("✓ " + labelTexts[i]) : ("✗ " + labelTexts[i]);
+         ObjectSetString(0, btnName, OBJPROP_TEXT, btnText);
+         ObjectSetInteger(0, btnName, OBJPROP_BGCOLOR, labelStates[i] ? clrDarkGreen : clrDarkRed);
+         ObjectSetInteger(0, btnName, OBJPROP_COLOR, clrWhite);
+         ObjectSetInteger(0, btnName, OBJPROP_FONTSIZE, 9);
+         ObjectSetInteger(0, btnName, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, btnName, OBJPROP_HIDDEN, true);
+         yOffset += buttonHeight + 5;
+      }
+   }
+   
+   // Unified Visibility Controls Panel (only Buttons show/hide)
+   else if(panelType == "VisibilityControls") {
+      g_activeSelectionPanel = "VisibilityControls";
+      
+      int buttonWidth = 80;
+      
+      ObjectSetInteger(0, bgName, OBJPROP_YSIZE, 1 * (buttonHeight + 5) + 20);
+      ObjectSetInteger(0, bgName, OBJPROP_XSIZE, buttonWidth * 2 + 30);  // Width for 2 columns
+      
+      // Fixed position: Left-Upper corner at 200x, 200y
+      ENUM_BASE_CORNER panelCorner = CORNER_LEFT_UPPER;
+      int panelX = 200;
+      int panelY = 200;
+      
+      ObjectSetInteger(0, bgName, OBJPROP_CORNER, panelCorner);
+      ObjectSetInteger(0, bgName, OBJPROP_XDISTANCE, panelX);
+      ObjectSetInteger(0, bgName, OBJPROP_YDISTANCE, panelY);
+      
+      yOffset = 10;
+      
+      // Show button (left column)
+      string showBtnName = "SelectShow_0";
+      ObjectCreate(0, showBtnName, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, showBtnName, OBJPROP_CORNER, panelCorner);
+      ObjectSetInteger(0, showBtnName, OBJPROP_XDISTANCE, panelX + 10);
+      ObjectSetInteger(0, showBtnName, OBJPROP_YDISTANCE, panelY + yOffset);
+      ObjectSetInteger(0, showBtnName, OBJPROP_XSIZE, buttonWidth);
+      ObjectSetInteger(0, showBtnName, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetString(0, showBtnName, OBJPROP_TEXT, "✓ Buttons");
+      ObjectSetInteger(0, showBtnName, OBJPROP_BGCOLOR, clrDarkGreen);
+      ObjectSetInteger(0, showBtnName, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, showBtnName, OBJPROP_FONTSIZE, 8);
+      ObjectSetInteger(0, showBtnName, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, showBtnName, OBJPROP_HIDDEN, false);
+      
+      // Hide button (right column)
+      string hideBtnName = "SelectHide_0";
+      ObjectCreate(0, hideBtnName, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, hideBtnName, OBJPROP_CORNER, panelCorner);
+      ObjectSetInteger(0, hideBtnName, OBJPROP_XDISTANCE, panelX + 10 + buttonWidth + 5);
+      ObjectSetInteger(0, hideBtnName, OBJPROP_YDISTANCE, panelY + yOffset);
+      ObjectSetInteger(0, hideBtnName, OBJPROP_XSIZE, buttonWidth);
+      ObjectSetInteger(0, hideBtnName, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetString(0, hideBtnName, OBJPROP_TEXT, "✗ Buttons");
+      ObjectSetInteger(0, hideBtnName, OBJPROP_BGCOLOR, clrDarkRed);
+      ObjectSetInteger(0, hideBtnName, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, hideBtnName, OBJPROP_FONTSIZE, 8);
+      ObjectSetInteger(0, hideBtnName, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, hideBtnName, OBJPROP_HIDDEN, false);
+   }
    
    ChartRedraw(0);
 }
@@ -1134,14 +1474,127 @@ void DestroySelectionPanel() {
          ObjectDelete(0, StringFormat("SelectMethod_%d", i));
       }
    }
+   else if(g_activeSelectionPanel == "HistoryMode") {
+      for(int i = 0; i < 4; i++) {
+         ObjectDelete(0, StringFormat("SelectHistory_%d", i));
+      }
+   }
+   else if(g_activeSelectionPanel == "VisibilityControls") {
+      // Delete both Show and Hide buttons from unified panel
+      ObjectDelete(0, "SelectShow_0");
+      ObjectDelete(0, "SelectHide_0");
+   }
+   else if(g_activeSelectionPanel == "LabelControl") {
+      // Delete ALL button
+      ObjectDelete(0, "SelectLabel_ALL");
+      // Delete all 15 label selection buttons
+      for(int i = 0; i < 15; i++) {
+         ObjectDelete(0, StringFormat("SelectLabel_%d", i));
+      }
+   }
    
+   ObjectDelete(0, "SelectionPanelBg");
    g_activeSelectionPanel = "";
    ChartRedraw(0);
 }
 
+//============================= VISIBILITY CONTROL FUNCTIONS =======//
+void ApplyVisibilitySettings() {
+   // Apply main button visibility
+   string mainButtons[] = {
+      "BtnStopNewOrders", "BtnNoWork", "BtnCloseAll", "BtnResetCounters",
+      "BtnCloseProfit", "BtnSingleTrail", "BtnTotalTrail", "BtnToggleLabels", 
+      "BtnOrderLabels", "BtnToggleNextLines", "BtnTrailMethod", "BtnHistoryMode", 
+      "BtnDebugLevel", "BtnPrintStats", "BtnToggleVLines", "BtnToggleHLines"
+   };
+   
+   if(g_showMainButtons) {
+      // Show buttons - recreate them if they don't exist
+      CreateButtons();
+      UpdateButtonStates();
+   } else {
+      // Hide buttons - delete them
+      for(int i = 0; i < ArraySize(mainButtons); i++) {
+         if(ObjectFind(0, mainButtons[i]) >= 0) {
+            ObjectDelete(0, mainButtons[i]);
+         }
+      }
+   }
+   
+   // Apply info label visibility (prevent auto-creation by only hiding existing ones)
+   string infoLabels[] = {
+      "OverallProfitLabel", "CycleBookedLabel", "LevelInfoLabel", "NearbyOrdersLabel",
+      "Last5ClosesLabel", "HistoryDisplayLabel", "CurrentProfitLabel", "PositionDetailsLabel",
+      "SpreadEquityLabel", "NextLotCalcLabel", "SingleTrailStatusLabel", "GroupTrailStatusLabel", "TotalTrailStatusLabel"
+   };
+   
+   for(int i = 0; i < ArraySize(infoLabels); i++) {
+      if(ObjectFind(0, infoLabels[i]) >= 0) {
+         ObjectSetInteger(0, infoLabels[i], OBJPROP_TIMEFRAMES, g_showInfoLabels ? OBJ_ALL_PERIODS : OBJ_NO_PERIODS);
+      }
+   }
+   
+   // Apply order label visibility (by prefix)
+   if(!g_showOrderLabelsCtrl) {
+      for(int i = ObjectsTotal(0, 0, -1) - 1; i >= 0; i--) {
+         string objName = ObjectName(0, i, 0, -1);
+         if(StringFind(objName, "OrderOpen_") >= 0 || StringFind(objName, "OrderClose_") >= 0) {
+            ObjectSetInteger(0, objName, OBJPROP_TIMEFRAMES, OBJ_NO_PERIODS);
+         }
+      }
+   } else {
+      for(int i = ObjectsTotal(0, 0, -1) - 1; i >= 0; i--) {
+         string objName = ObjectName(0, i, 0, -1);
+         if(StringFind(objName, "OrderOpen_") >= 0 || StringFind(objName, "OrderClose_") >= 0) {
+            ObjectSetInteger(0, objName, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+         }
+      }
+   }
+   
+   // Apply VLine visibility
+   if(!g_showVLines) {
+      for(int i = ObjectsTotal(0, 0, OBJ_VLINE) - 1; i >= 0; i--) {
+         string objName = ObjectName(0, i, 0, OBJ_VLINE);
+         ObjectSetInteger(0, objName, OBJPROP_TIMEFRAMES, OBJ_NO_PERIODS);
+      }
+   } else {
+      for(int i = ObjectsTotal(0, 0, OBJ_VLINE) - 1; i >= 0; i--) {
+         string objName = ObjectName(0, i, 0, OBJ_VLINE);
+         ObjectSetInteger(0, objName, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+      }
+   }
+   
+   // Apply HLine visibility
+   if(!g_showHLines) {
+      for(int i = ObjectsTotal(0, 0, OBJ_HLINE) - 1; i >= 0; i--) {
+         string objName = ObjectName(0, i, 0, OBJ_HLINE);
+         ObjectSetInteger(0, objName, OBJPROP_TIMEFRAMES, OBJ_NO_PERIODS);
+      }
+   } else {
+      for(int i = ObjectsTotal(0, 0, OBJ_HLINE) - 1; i >= 0; i--) {
+         string objName = ObjectName(0, i, 0, OBJ_HLINE);
+         ObjectSetInteger(0, objName, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+      }
+   }
+   
+   // Ensure permanent control button stays visible (never hide this!)
+   if(ObjectFind(0, "BtnVisibilityControls") >= 0) {
+      ObjectSetInteger(0, "BtnVisibilityControls", OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+      ObjectSetInteger(0, "BtnVisibilityControls", OBJPROP_HIDDEN, false);
+   }
+   
+   ChartRedraw(0);
+   Log(2, StringFormat("Visibility applied: Buttons=%s, Labels=%s, OrderLabels=%s, VLines=%s, HLines=%s",
+       g_showMainButtons ? "ON" : "OFF",
+       g_showInfoLabels ? "ON" : "OFF",
+       g_showOrderLabelsCtrl ? "ON" : "OFF",
+       g_showVLines ? "ON" : "OFF",
+       g_showHLines ? "ON" : "OFF"));
+}
+
 //============================= ORDER LABEL FUNCTIONS ==============//
 void CreateOpenOrderLabel(ulong ticket, int level, int orderType, double lotSize, double price, datetime time) {
-   if(!g_showOrderLabels) return;
+   if(!g_showOrderLabels || !g_showOrderLabelsCtrl) return;
    
    string typeStr = (orderType == POSITION_TYPE_BUY) ? "B" : "S";
    string labelName = StringFormat("OrderOpen_%I64u", ticket);
@@ -1163,11 +1616,11 @@ void CreateOpenOrderLabel(ulong ticket, int level, int orderType, double lotSize
 }
 
 void CreateCloseOrderLabel(ulong ticket, int level, int orderType, double profit, double price, datetime time) {
-   if(!g_showOrderLabels) return;
+   if(!g_showOrderLabels || !g_showOrderLabelsCtrl) return;
    
    string typeStr = (orderType == POSITION_TYPE_BUY) ? "B" : "S";
    string labelName = StringFormat("OrderClose_%I64u", ticket);
-   string labelText = StringFormat("L%d %s %s%.0f", level, typeStr, profit >= 0 ? "+" : "", profit);
+   string labelText = StringFormat("L%d %s %s%.1f", level, typeStr, profit >= 0 ? "+" : "", profit);
    color labelColor = profit >= 0 ? clrLime : clrRed;
    
    if(ObjectFind(0, labelName) < 0) {
@@ -1758,8 +2211,13 @@ double ApplyLotMethod(ENUM_LOT_CALC_METHOD method) {
    return calculatedLot;
 }
 
-// Helper: Detect lot scenario for specific order type and level
-int DetectLotScenario(ENUM_POSITION_TYPE orderType, int level) {
+// Helper: Detect all matching lot scenarios for specific order type and level
+void DetectAllMatchingScenarios(ENUM_POSITION_TYPE orderType, int level, bool &matchingScenarios[]) {
+   // Initialize all to false
+   for(int i = 0; i < 7; i++) {
+      matchingScenarios[i] = false;
+   }
+   
    // Count orders and positions
    int buyLossCount = 0, sellLossCount = 0;
    bool hasBuyAbove = false, hasSellBelow = false;
@@ -1791,38 +2249,70 @@ int DetectLotScenario(ENUM_POSITION_TYPE orderType, int level) {
    int sellCount = g_sellCount;
    int countDiff = (int)MathAbs(buyCount - sellCount);
    
-   // Scenario 1: Boundary Orders
-   if(orderType == POSITION_TYPE_BUY && !hasBuyAbove) return 0; // Top BUY
-   if(orderType == POSITION_TYPE_SELL && !hasSellBelow) return 0; // Bottom SELL
-   
-   // Scenario 6: Centered Position (small buy/sell difference)
-   if(countDiff <= CenteredThreshold) return 5;
-   
-   // Scenario 7: Sided Position (imbalanced but not boundary)
-   if(countDiff > CenteredThreshold) return 6;
-   
-   // Scenario 4: GPO > GLO
-   if(totalGPO > totalGLO) return 3;
-   
-   // Scenario 5: GLO > GPO
-   if(totalGLO > totalGPO) return 4;
-   
-   // Scenario 2 & 3: Direction vs Counter-direction
-   // Direction order = opposite to accumulation side
-   // If more sells in loss, movement is UP, direction order is BUY
-   // If more buys in loss, movement is DOWN, direction order is SELL
-   if(sellLossCount > buyLossCount) {
-      // Movement is UP (sells losing)
-      if(orderType == POSITION_TYPE_BUY) return 1; // Direction
-      else return 2; // Counter-direction
-   } else if(buyLossCount > sellLossCount) {
-      // Movement is DOWN (buys losing)
-      if(orderType == POSITION_TYPE_SELL) return 1; // Direction
-      else return 2; // Counter-direction
+   // Check Scenario 1: Boundary Orders (Case 1)
+   if((orderType == POSITION_TYPE_BUY && !hasBuyAbove) || 
+      (orderType == POSITION_TYPE_SELL && !hasSellBelow)) {
+      matchingScenarios[0] = true;
    }
    
-   // Default: Centered
-   return 5;
+   // Check Scenario 2 & 3: Direction vs Counter-direction
+   if(sellLossCount > buyLossCount) {
+      // Movement is UP (sells losing)
+      if(orderType == POSITION_TYPE_BUY) matchingScenarios[1] = true; // Direction (Case 2)
+      else matchingScenarios[2] = true; // Counter-direction (Case 3)
+   } else if(buyLossCount > sellLossCount) {
+      // Movement is DOWN (buys losing)
+      if(orderType == POSITION_TYPE_SELL) matchingScenarios[1] = true; // Direction (Case 2)
+      else matchingScenarios[2] = true; // Counter-direction (Case 3)
+   }
+   
+   // Check Scenario 4: GPO > GLO (Case 4)
+   if(totalGPO > totalGLO) {
+      matchingScenarios[3] = true;
+   }
+   
+   // Check Scenario 5: GLO > GPO (Case 5)
+   if(totalGLO > totalGPO) {
+      matchingScenarios[4] = true;
+   }
+   
+   // Check Scenario 6: Centered Position (Case 6)
+   if(countDiff <= CenteredThreshold) {
+      matchingScenarios[5] = true;
+   }
+   
+   // Check Scenario 7: Sided Position (Case 7)
+   if(countDiff > CenteredThreshold) {
+      matchingScenarios[6] = true;
+   }
+}
+
+// Helper: Detect lot scenario based on priority sequence
+int DetectLotScenario(ENUM_POSITION_TYPE orderType, int level) {
+   bool matchingScenarios[7];
+   DetectAllMatchingScenarios(orderType, level, matchingScenarios);
+   
+   // Find first matching scenario based on priority sequence
+   for(int p = 0; p < 7; p++) {
+      int scenarioIndex = g_lotCalcPriority[p] - 1; // Convert 1-based to 0-based
+      if(scenarioIndex >= 0 && scenarioIndex < 7 && matchingScenarios[scenarioIndex]) {
+         // Check if this scenario's method is not IGNORE
+         ENUM_LOT_CALC_METHOD method = GetMethodForScenario(scenarioIndex);
+         if(method != LOT_CALC_IGNORE) {
+            return scenarioIndex;
+         }
+      }
+   }
+   
+   // Default: Return first non-ignored scenario, or scenario 5 (centered) if all ignored
+   for(int i = 0; i < 7; i++) {
+      ENUM_LOT_CALC_METHOD method = GetMethodForScenario(i);
+      if(method != LOT_CALC_IGNORE) {
+         return i;
+      }
+   }
+   
+   return 5; // Fallback to centered
 }
 
 // Helper: Get lot method for scenario
@@ -1861,19 +2351,28 @@ void CalculateNextLots() {
    // Detect scenario and calculate lot for BUY
    int buyScenario = DetectLotScenario(POSITION_TYPE_BUY, currentLevel);
    ENUM_LOT_CALC_METHOD buyMethod = GetMethodForScenario(buyScenario);
-   g_nextBuyLot = NormalizeLotSize(ApplyLotMethod(buyMethod));
+   double buyLotResult = ApplyLotMethod(buyMethod);
+   g_nextBuyLot = (buyLotResult >= 0) ? NormalizeLotSize(buyLotResult) : NormalizeLotSize(BaseLotSize);
+   g_nextBuyScenario = buyScenario;
    
    // Detect scenario and calculate lot for SELL
    int sellScenario = DetectLotScenario(POSITION_TYPE_SELL, currentLevel);
    ENUM_LOT_CALC_METHOD sellMethod = GetMethodForScenario(sellScenario);
-   g_nextSellLot = NormalizeLotSize(ApplyLotMethod(sellMethod));
+   double sellLotResult = ApplyLotMethod(sellMethod);
+   g_nextSellLot = (sellLotResult >= 0) ? NormalizeLotSize(sellLotResult) : NormalizeLotSize(BaseLotSize);
+   g_nextSellScenario = sellScenario;
    
    string scenarioNames[] = {"Boundary", "Direction", "Counter", "GPO>GLO", "GLO>GPO", "Centered", "Sided"};
-   string methodNames[] = {"Base", "GLO", "GPO", "Diff", "Total", "BuySellDiff"};
+   string methodNames[] = {"Base", "GLO", "GPO", "Diff", "Total", "BuySellDiff", "IGNORE"};
+   
+   string buyMethodName = (buyMethod < 6) ? methodNames[buyMethod] : "IGNORE";
+   string sellMethodName = (sellMethod < 6) ? methodNames[sellMethod] : "IGNORE";
+   g_nextBuyMethod = buyMethodName;
+   g_nextSellMethod = sellMethodName;
    
    Log(3, StringFormat("Lot Calc: BUY Scenario=%s Method=%s Lot=%.2f | SELL Scenario=%s Method=%s Lot=%.2f",
-       scenarioNames[buyScenario], methodNames[buyMethod], g_nextBuyLot,
-       scenarioNames[sellScenario], methodNames[sellMethod], g_nextSellLot));
+       scenarioNames[buyScenario], buyMethodName, g_nextBuyLot,
+       scenarioNames[sellScenario], sellMethodName, g_nextSellLot));
    
    // Override with calculated lot size if trail is active and mode requires it
    if(g_trailActive && (TrailOrderMode == TRAIL_ORDERS_BASESIZE || 
@@ -3218,6 +3717,30 @@ void UpdateSingleTrailLines() {
    }
 }
 
+// Remove all single trail and group trail horizontal lines
+void RemoveAllSingleAndGroupTrailLines() {
+   // Remove all single trail lines
+   for(int i = 0; i < ArraySize(g_trails); i++) {
+      string lineName = StringFormat("TrailFloor_%I64u", g_trails[i].ticket);
+      if(ObjectFind(0, lineName) >= 0) {
+         ObjectDelete(0, lineName);
+         Log(2, StringFormat("[TRAIL-CLEAN] Removed single trail line: %s", lineName));
+      }
+   }
+   
+   // Remove group trail lines
+   if(ObjectFind(0, "GroupTrailFloor_BUY") >= 0) {
+      ObjectDelete(0, "GroupTrailFloor_BUY");
+      Log(2, "[TRAIL-CLEAN] Removed group trail line: GroupTrailFloor_BUY");
+   }
+   if(ObjectFind(0, "GroupTrailFloor_SELL") >= 0) {
+      ObjectDelete(0, "GroupTrailFloor_SELL");
+      Log(2, "[TRAIL-CLEAN] Removed group trail line: GroupTrailFloor_SELL");
+   }
+   
+   Log(1, "All single and group trail lines removed");
+}
+
 //============================= GROUP TRAILING (CLOSE TOGETHER) ====//
 // Trail combined profit of farthest losing orders + farthest profitable orders
 // useSameTypeOnly: if true, only close same-type orders together; if false, can close any-side orders
@@ -3609,21 +4132,40 @@ string GetSingleTrailStatusInfo() {
    // Skip if total trail is active
    if(g_trailActive) return "ST: Skipped (Total Trail Active)";
    
-   // Count active single trails
+   // Count active single trails and gather details
    int activeTrails = 0;
    double totalProfit = 0.0;
+   string trailDetails = "";
+   
    for(int i = 0; i < ArraySize(g_trails); i++) {
       if(g_trails[i].active) {
          activeTrails++;
-         // Find position to get profit
+         // Find position to get current profit and details
          if(PositionSelectByTicket(g_trails[i].ticket)) {
-            totalProfit += PositionGetDouble(POSITION_PROFIT);
+            double currentProfit = PositionGetDouble(POSITION_PROFIT);
+            double currentPPL = currentProfit / (PositionGetDouble(POSITION_VOLUME) / 0.01);
+            totalProfit += currentProfit;
+            
+            // Get level info
+            string levelInfo = GetLevelInfoForTicket(g_trails[i].ticket);
+            
+            // Add to details string (show first 3 trails)
+            if(activeTrails <= 3) {
+               if(trailDetails != "") trailDetails += " ";
+               trailDetails += StringFormat("%s:%.0f/%.0f", levelInfo, currentPPL, g_trails[i].activePeak);
+            }
          }
       }
    }
    
    if(activeTrails > 0) {
-      return StringFormat("ST:%d TP:%.0f", activeTrails, totalProfit);
+      if(activeTrails <= 3) {
+         // Show detailed info for small number of trails
+         return StringFormat("ST:%d %s", activeTrails, trailDetails);
+      } else {
+         // Show summary for many trails
+         return StringFormat("ST:%d TP:%.0f", activeTrails, totalProfit);
+      }
    }
    
    // Check if single trail should be active based on method
@@ -4266,24 +4808,13 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          }
       }
       
-      // Button 4: Toggle Labels
+      // Button 4: Toggle Labels - Show selection panel for individual label control
       if(sparam == "BtnToggleLabels") {
-         g_showLabels = !g_showLabels;
-         
-         if(!g_showLabels) {
-            // Hide all labels
-            ObjectDelete(0, "CurrentProfitLabel");
-            ObjectDelete(0, "PositionDetailsLabel");
-            ObjectDelete(0, "SpreadEquityLabel");
-            ObjectDelete(0, "Last5ClosesLabel");
-            ObjectDelete(0, "Last5DaysSymbolLabel");
-            ObjectDelete(0, "Last5DaysOverallLabel");
-            ObjectDelete(0, "CenterProfitLabel");
-            ObjectDelete(0, "CurrentProfitVLine");
+         if(g_activeSelectionPanel == "LabelControl") {
+            DestroySelectionPanel();
+         } else {
+            CreateSelectionPanel("LabelControl");
          }
-         
-         UpdateButtonStates();
-         Log(1, StringFormat("Labels Display: %s", g_showLabels ? "ENABLED" : "DISABLED"));
       }
       
       // Button 5: Toggle Next Level Lines
@@ -4304,6 +4835,69 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       if(sparam == "BtnPrintStats") {
          PrintCurrentStats();
          Log(1, "Stats printed to log");
+      }
+      
+      // Button 11: History Display Mode (show selection panel)
+      if(sparam == "BtnHistoryMode") {
+         if(g_activeSelectionPanel == "HistoryMode") {
+            DestroySelectionPanel();
+         } else {
+            CreateSelectionPanel("HistoryMode");
+         }
+      }
+      
+      // Button 15: Toggle VLines
+      if(sparam == "BtnToggleVLines") {
+         g_showVLines = !g_showVLines;
+         UpdateButtonStates();
+         ApplyVisibilitySettings();
+         Log(1, StringFormat("VLines Display: %s", g_showVLines ? "ENABLED" : "DISABLED"));
+      }
+      
+      // Button 16: Toggle HLines
+      if(sparam == "BtnToggleHLines") {
+         g_showHLines = !g_showHLines;
+         UpdateButtonStates();
+         ApplyVisibilitySettings();
+         Log(1, StringFormat("HLines Display: %s", g_showHLines ? "ENABLED" : "DISABLED"));
+      }
+      
+      // Permanent Control Button (Always Visible) - Direct Toggle
+      if(sparam == "BtnVisibilityControls") {
+         g_showMainButtons = !g_showMainButtons;
+         ApplyVisibilitySettings();
+         UpdateButtonStates();
+         Log(1, StringFormat("Main Buttons: %s", g_showMainButtons ? "SHOWN" : "HIDDEN"));
+      }
+      
+      // Handle Show Control selections
+      if(StringFind(sparam, "SelectShow_") >= 0) {
+         int selectedOption = (int)StringToInteger(StringSubstr(sparam, 11));
+         switch(selectedOption) {
+            case 0: g_showMainButtons = true; break;       // Buttons
+            case 1: g_showInfoLabels = true; break;        // InfoLabels
+            case 2: g_showOrderLabelsCtrl = true; break;   // OrderLabels
+            case 3: g_showVLines = true; break;            // VLines
+            case 4: g_showHLines = true; break;            // HLines
+         }
+         DestroySelectionPanel();
+         ApplyVisibilitySettings();
+         Log(2, StringFormat("Show control activated: option %d", selectedOption));
+      }
+      
+      // Handle Hide Control selections
+      if(StringFind(sparam, "SelectHide_") >= 0) {
+         int selectedOption = (int)StringToInteger(StringSubstr(sparam, 11));
+         switch(selectedOption) {
+            case 0: g_showMainButtons = false; break;      // Buttons
+            case 1: g_showInfoLabels = false; break;       // InfoLabels
+            case 2: g_showOrderLabelsCtrl = false; break;  // OrderLabels
+            case 3: g_showVLines = false; break;           // VLines
+            case 4: g_showHLines = false; break;           // HLines
+         }
+         DestroySelectionPanel();
+         ApplyVisibilitySettings();
+         Log(2, StringFormat("Hide control activated: option %d", selectedOption));
       }
       
       // Button 7: Debug Level (show selection panel)
@@ -4329,6 +4923,145 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
             case 3: levelName = "VERBOSE"; break;
          }
          Log(1, StringFormat("Debug Level changed to: %d (%s)", g_currentDebugLevel, levelName));
+      }
+      
+      // Handle History Mode selections
+      if(StringFind(sparam, "SelectHistory_") >= 0) {
+         int selectedMode = (int)StringToInteger(StringSubstr(sparam, 14)); // Extract number from "SelectHistory_X"
+         g_historyDisplayMode = selectedMode;
+         DestroySelectionPanel();
+         UpdateButtonStates();
+         string modeName = "";
+         switch(g_historyDisplayMode) {
+            case 0: modeName = "Overall (All Symbols/All Magic)"; break;
+            case 1: modeName = "Current Symbol (All Magic)"; break;
+            case 2: modeName = "Current Symbol (Current Magic)"; break;
+            case 3: modeName = "Per-Symbol Breakdown"; break;
+         }
+         Log(2, StringFormat("History Display Mode changed to: %d (%s)", g_historyDisplayMode, modeName));
+      }
+      
+      // Handle Label Control selections
+      // Handle ALL labels toggle
+      if(sparam == "SelectLabel_ALL") {
+         // Check current state - if any label is hidden, show all; if all are shown, hide all
+         bool allVisible = g_showCurrentProfitLabel && g_showPositionDetailsLabel && g_showSpreadEquityLabel && g_showNextLotCalcLabel &&
+                          g_showSingleTrailLabel && g_showGroupTrailLabel && g_showTotalTrailLabel && g_showLevelInfoLabel &&
+                          g_showNearbyOrdersLabel && g_showLast5ClosesLabel && g_showHistoryDisplayLabel &&
+                          g_showCenterProfitLabel && g_showCenterCycleLabel && g_showCenterBookedLabel && g_showCenterNetLotsLabel;
+         
+         // Toggle all labels to opposite of current state
+         bool newState = !allVisible;
+         g_showCurrentProfitLabel = newState;
+         g_showPositionDetailsLabel = newState;
+         g_showSpreadEquityLabel = newState;
+         g_showNextLotCalcLabel = newState;
+         g_showSingleTrailLabel = newState;
+         g_showGroupTrailLabel = newState;
+         g_showTotalTrailLabel = newState;
+         g_showLevelInfoLabel = newState;
+         g_showNearbyOrdersLabel = newState;
+         g_showLast5ClosesLabel = newState;
+         g_showHistoryDisplayLabel = newState;
+         g_showCenterProfitLabel = newState;
+         g_showCenterCycleLabel = newState;
+         g_showCenterBookedLabel = newState;
+         g_showCenterNetLotsLabel = newState;
+         
+         // Update ALL button appearance
+         ObjectSetInteger(0, "SelectLabel_ALL", OBJPROP_BGCOLOR, newState ? clrDarkGreen : clrDarkRed);
+         ObjectSetString(0, "SelectLabel_ALL", OBJPROP_TEXT, newState ? "✓ ALL" : "✗ ALL");
+         
+         // Update all individual label buttons
+         string labelNames[] = {
+            "CurrentProfit", "PositionDetails", "SpreadEquity", "NextLotCalc",
+            "SingleTrail", "GroupTrail", "TotalTrail", "LevelInfo",
+            "NearbyOrders", "Last5Closes", "HistoryDisplay",
+            "CenterProfit", "CenterCycle", "CenterBooked", "CenterNetLots"
+         };
+         
+         for(int i = 0; i < 15; i++) {
+            string btnName = StringFormat("SelectLabel_%d", i);
+            if(newState) {
+               ObjectSetInteger(0, btnName, OBJPROP_BGCOLOR, clrDarkGreen);
+               ObjectSetString(0, btnName, OBJPROP_TEXT, "✓ " + labelNames[i]);
+            } else {
+               ObjectSetInteger(0, btnName, OBJPROP_BGCOLOR, clrDarkRed);
+               ObjectSetString(0, btnName, OBJPROP_TEXT, "✗ " + labelNames[i]);
+            }
+         }
+         
+         Log(2, StringFormat("All labels toggled: %s", newState ? "VISIBLE" : "HIDDEN"));
+      }
+      
+      if(StringFind(sparam, "SelectLabel_") >= 0 && sparam != "SelectLabel_ALL") {
+         int selectedLabel = (int)StringToInteger(StringSubstr(sparam, 12)); // Extract number from "SelectLabel_X"
+         
+         // Toggle the selected label
+         switch(selectedLabel) {
+            case 0: g_showCurrentProfitLabel = !g_showCurrentProfitLabel; break;
+            case 1: g_showPositionDetailsLabel = !g_showPositionDetailsLabel; break;
+            case 2: g_showSpreadEquityLabel = !g_showSpreadEquityLabel; break;
+            case 3: g_showNextLotCalcLabel = !g_showNextLotCalcLabel; break;
+            case 4: g_showSingleTrailLabel = !g_showSingleTrailLabel; break;
+            case 5: g_showGroupTrailLabel = !g_showGroupTrailLabel; break;
+            case 6: g_showTotalTrailLabel = !g_showTotalTrailLabel; break;
+            case 7: g_showLevelInfoLabel = !g_showLevelInfoLabel; break;
+            case 8: g_showNearbyOrdersLabel = !g_showNearbyOrdersLabel; break;
+            case 9: g_showLast5ClosesLabel = !g_showLast5ClosesLabel; break;
+            case 10: g_showHistoryDisplayLabel = !g_showHistoryDisplayLabel; break;
+            case 11: g_showCenterProfitLabel = !g_showCenterProfitLabel; break;
+            case 12: g_showCenterCycleLabel = !g_showCenterCycleLabel; break;
+            case 13: g_showCenterBookedLabel = !g_showCenterBookedLabel; break;
+            case 14: g_showCenterNetLotsLabel = !g_showCenterNetLotsLabel; break;
+         }
+         
+         // Update button appearance to show current state
+         string btnName = StringFormat("SelectLabel_%d", selectedLabel);
+         bool isVisible = false;
+         string labelNames[] = {
+            "CurrentProfit", "PositionDetails", "SpreadEquity", "NextLotCalc",
+            "SingleTrail", "GroupTrail", "TotalTrail", "LevelInfo",
+            "NearbyOrders", "Last5Closes", "HistoryDisplay",
+            "CenterProfit", "CenterCycle", "CenterBooked", "CenterNetLots"
+         };
+         
+         switch(selectedLabel) {
+            case 0: isVisible = g_showCurrentProfitLabel; break;
+            case 1: isVisible = g_showPositionDetailsLabel; break;
+            case 2: isVisible = g_showSpreadEquityLabel; break;
+            case 3: isVisible = g_showNextLotCalcLabel; break;
+            case 4: isVisible = g_showSingleTrailLabel; break;
+            case 5: isVisible = g_showGroupTrailLabel; break;
+            case 6: isVisible = g_showTotalTrailLabel; break;
+            case 7: isVisible = g_showLevelInfoLabel; break;
+            case 8: isVisible = g_showNearbyOrdersLabel; break;
+            case 9: isVisible = g_showLast5ClosesLabel; break;
+            case 10: isVisible = g_showHistoryDisplayLabel; break;
+            case 11: isVisible = g_showCenterProfitLabel; break;
+            case 12: isVisible = g_showCenterCycleLabel; break;
+            case 13: isVisible = g_showCenterBookedLabel; break;
+            case 14: isVisible = g_showCenterNetLotsLabel; break;
+         }
+         
+         string labelName = (selectedLabel >= 0 && selectedLabel < 15) ? labelNames[selectedLabel] : "Unknown";
+         if(isVisible) {
+            ObjectSetInteger(0, btnName, OBJPROP_BGCOLOR, clrDarkGreen);
+            ObjectSetString(0, btnName, OBJPROP_TEXT, "✓ " + labelName);
+         } else {
+            ObjectSetInteger(0, btnName, OBJPROP_BGCOLOR, clrDarkRed);
+            ObjectSetString(0, btnName, OBJPROP_TEXT, "✗ " + labelName);
+         }
+         
+         // Update ALL button state based on whether all labels are now visible
+         bool allVisible = g_showCurrentProfitLabel && g_showPositionDetailsLabel && g_showSpreadEquityLabel && g_showNextLotCalcLabel &&
+                          g_showSingleTrailLabel && g_showGroupTrailLabel && g_showTotalTrailLabel && g_showLevelInfoLabel &&
+                          g_showNearbyOrdersLabel && g_showLast5ClosesLabel && g_showHistoryDisplayLabel &&
+                          g_showCenterProfitLabel && g_showCenterCycleLabel && g_showCenterBookedLabel && g_showCenterNetLotsLabel;
+         ObjectSetInteger(0, "SelectLabel_ALL", OBJPROP_BGCOLOR, allVisible ? clrDarkGreen : clrDarkRed);
+         ObjectSetString(0, "SelectLabel_ALL", OBJPROP_TEXT, allVisible ? "✓ ALL" : "✗ ALL");
+         
+         Log(2, StringFormat("Label %d visibility toggled: %s", selectedLabel, isVisible ? "VISIBLE" : "HIDDEN"));
       }
       
       // Button 8: Single Trail Mode (show selection panel)
@@ -4371,6 +5104,10 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          g_totalTrailMode = selectedMode;
          DestroySelectionPanel();
          UpdateButtonStates();
+         
+         // Remove all single trail and group trail lines when switching to total trail
+         RemoveAllSingleAndGroupTrailLines();
+         
          string modeName = "";
          double multiplier = 1.0;
          switch(g_totalTrailMode) {
@@ -4454,10 +5191,63 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    }
 }
 
+// Parse priority sequence from input string
+void ParsePrioritySequence() {
+   // Default sequence: 1,2,3,4,5,6,7
+   for(int i = 0; i < 7; i++) {
+      g_lotCalcPriority[i] = i + 1;
+   }
+   
+   // Parse input string
+   string parts[];
+   int count = StringSplit(LotCalc_PrioritySequence, ',', parts);
+   
+   if(count > 0 && count <= 7) {
+      int validCount = 0;
+      for(int i = 0; i < count && validCount < 7; i++) {
+         StringTrimLeft(parts[i]);
+         StringTrimRight(parts[i]);
+         int num = (int)StringToInteger(parts[i]);
+         if(num >= 1 && num <= 7) {
+            g_lotCalcPriority[validCount] = num;
+            validCount++;
+         }
+      }
+      
+      // Fill remaining with default sequence (any missing numbers)
+      if(validCount < 7) {
+         for(int num = 1; num <= 7 && validCount < 7; num++) {
+            bool exists = false;
+            for(int j = 0; j < validCount; j++) {
+               if(g_lotCalcPriority[j] == num) {
+                  exists = true;
+                  break;
+               }
+            }
+            if(!exists) {
+               g_lotCalcPriority[validCount] = num;
+               validCount++;
+            }
+         }
+      }
+   }
+   
+   // Log parsed sequence
+   string seqStr = "";
+   for(int i = 0; i < 7; i++) {
+      if(i > 0) seqStr += ",";
+      seqStr += IntegerToString(g_lotCalcPriority[i]);
+   }
+   Log(1, StringFormat("Lot Calc Priority Sequence: %s", seqStr));
+}
+
 //============================= MAIN FUNCTIONS =====================//
 int OnInit() {
    // Initialize current debug level from input
    g_currentDebugLevel = DebugLevel;
+   
+   // Parse lot calculation priority sequence
+   ParsePrioritySequence();
    
    // Initialize trail method from input
    g_currentTrailMethod = SingleTrailMethod;
@@ -4674,77 +5464,119 @@ void UpdateCurrentProfitVline() {
    // All labels controlled by show labels button
    if(g_showLabels) {
       // Label 1: Current Profit Label
-      color lineColor = (cycleProfit > 1.0) ? clrGreen : (cycleProfit < -1.0) ? clrRed : clrYellow;
-      string modeIndicator = "";
-      if(g_noWork) modeIndicator = " [NO WORK]";
-      else if(g_stopNewOrders) modeIndicator = " [MANAGE ONLY]";
-      
-      // Calculate trailing start threshold
-      double lossStart = g_maxLossCycle * TrailStartPct;
-      double profitStart = g_maxProfitCycle * TrailProfitPct;
-      double trailStart = MathMax(lossStart, profitStart);
-      
-      string vlinetext = StringFormat("P:%.0f/%.0f/%.0f/%.0f/%.0f(E%.0f)ML%.0f/%.0f L%.2f/%.2f glo %d/%d%s", 
-            cycleProfit, g_maxProfitCycle, trailStart, g_trailFloor, g_trailPeak, bookedCycle, -g_maxLossCycle, -g_overallMaxLoss, 
-            g_maxLotsCycle, g_overallMaxLotSize, g_orders_in_loss, g_maxGLOOverall, modeIndicator);
-      UpdateOrCreateLabel("CurrentProfitLabel", 10, 30, vlinetext, lineColor, 12, "Arial Bold");
+      if(g_showCurrentProfitLabel) {
+         color lineColor = (cycleProfit > 1.0) ? clrGreen : (cycleProfit < -1.0) ? clrRed : clrYellow;
+         string modeIndicator = "";
+         if(g_noWork) modeIndicator = " [NO WORK]";
+         else if(g_stopNewOrders) modeIndicator = " [MANAGE ONLY]";
+         
+         // Calculate trailing start threshold
+         double lossStart = g_maxLossCycle * TrailStartPct;
+         double profitStart = g_maxProfitCycle * TrailProfitPct;
+         double trailStart = MathMax(lossStart, profitStart);
+         
+         string vlinetext = StringFormat("P:%.0f/%.0f/%.0f/%.0f/%.0f(E%.0f)ML%.0f/%.0f L%.2f/%.2f glo %d/%d%s", 
+               cycleProfit, g_maxProfitCycle, trailStart, g_trailFloor, g_trailPeak, bookedCycle, -g_maxLossCycle, -g_overallMaxLoss, 
+               g_maxLotsCycle, g_overallMaxLotSize, g_orders_in_loss, g_maxGLOOverall, modeIndicator);
+         UpdateOrCreateLabel("CurrentProfitLabel", 10, 30, vlinetext, lineColor, 12, "Arial Bold");
+      } else {
+         ObjectDelete(0, "CurrentProfitLabel");
+      }
       
       // Label 2: Position Details
-      int totalCount = g_buyCount + g_sellCount;
-      double totalLots = g_buyLots + g_sellLots;
-      string label2text = StringFormat("N:%d/%.2f/%.0f B:%d/%.2f/%.0f S:%d/%.2f/%.0f NB%.2f/NS%.2f",
-            totalCount, g_netLots, totalLots,
-            g_buyCount, g_buyLots, g_buyProfit,
-            g_sellCount, g_sellLots, g_sellProfit,
-            g_nextBuyLot, g_nextSellLot);
-      color label2Color = (g_totalProfit >= 0) ? clrLime : clrOrange;
-      UpdateOrCreateLabel("PositionDetailsLabel", 10, 50, label2text, label2Color, 10, "Arial Bold");
+      if(g_showPositionDetailsLabel) {
+         int totalCount = g_buyCount + g_sellCount;
+         double totalLots = g_buyLots + g_sellLots;
+         string label2text = StringFormat("N:%d/%.2f/%.0f B:%d/%.2f/%.0f S:%d/%.2f/%.0f NB%.2f/NS%.2f",
+               totalCount, g_netLots, totalLots,
+               g_buyCount, g_buyLots, g_buyProfit,
+               g_sellCount, g_sellLots, g_sellProfit,
+               g_nextBuyLot, g_nextSellLot);
+         color label2Color = (g_totalProfit >= 0) ? clrLime : clrOrange;
+         UpdateOrCreateLabel("PositionDetailsLabel", 10, 50, label2text, label2Color, 10, "Arial Bold");
+      } else {
+         ObjectDelete(0, "PositionDetailsLabel");
+      }
       
       // Label 3: Spread & Equity
-      double currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * _Point;
-      double inputGapPoints = GapInPoints;
-      double effectiveGapPoints = g_adaptiveGap / _Point;
-      string label3text = StringFormat("SPR:%.1f/%.1f |Gp:%.0f/%.0f |Eq:%.0f |PR:%.2f/%.2f", 
-            currentSpread/_Point, g_maxSpread/_Point, inputGapPoints, effectiveGapPoints, equity,cycleProfit, overallProfit);
-      color label3Color = (overallProfit >= 0) ? clrGreen : clrRed;
-      UpdateOrCreateLabel("SpreadEquityLabel", 10, 70, label3text, label3Color, 10, "Arial Bold");
+      if(g_showSpreadEquityLabel) {
+         double currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * _Point;
+         double inputGapPoints = GapInPoints;
+         double effectiveGapPoints = g_adaptiveGap / _Point;
+         string label3text = StringFormat("SPR:%.1f/%.1f |Gp:%.0f/%.0f |Eq:%.0f |PR:%.2f/%.2f", 
+               currentSpread/_Point, g_maxSpread/_Point, inputGapPoints, effectiveGapPoints, equity,cycleProfit, overallProfit);
+         color label3Color = (overallProfit >= 0) ? clrGreen : clrRed;
+         UpdateOrCreateLabel("SpreadEquityLabel", 10, 70, label3text, label3Color, 10, "Arial Bold");
+      } else {
+         ObjectDelete(0, "SpreadEquityLabel");
+      }
+      
+      // Label NEW: Next Lot Calculation Details
+      if(g_showNextLotCalcLabel) {
+         string scenarioNames[] = {"Boundary", "Direction", "Counter", "GPO>GLO", "GLO>GPO", "Centered", "Sided"};
+         string buyScenarioName = (g_nextBuyScenario >= 0 && g_nextBuyScenario < 7) ? scenarioNames[g_nextBuyScenario] : "Unknown";
+         string sellScenarioName = (g_nextSellScenario >= 0 && g_nextSellScenario < 7) ? scenarioNames[g_nextSellScenario] : "Unknown";
+         
+         string nextLotText = StringFormat("NextLots: B[%s|%s|%.2f] S[%s|%s|%.2f] GLO:%d GPO:%d",
+               buyScenarioName, g_nextBuyMethod, g_nextBuyLot,
+               sellScenarioName, g_nextSellMethod, g_nextSellLot,
+               g_orders_in_loss, g_orders_in_profit);
+         color nextLotColor = clrLightSkyBlue;
+         UpdateOrCreateLabel("NextLotCalcLabel", 10, 90, nextLotText, nextLotColor, 9, "Arial Bold");
+      } else {
+         ObjectDelete(0, "NextLotCalcLabel");
+      }
       
       // Label 4: Single Trail Status
-      string singleTrailStatus = GetSingleTrailStatusInfo();
-      color singleTrailColor = clrCyan;
-      if(StringFind(singleTrailStatus, "ACTIVE") >= 0) singleTrailColor = clrYellow;
-      else if(StringFind(singleTrailStatus, "READY") >= 0 || StringFind(singleTrailStatus, "RDY") >= 0) singleTrailColor = clrLimeGreen;
-      else if(StringFind(singleTrailStatus, "NOT-USED") >= 0 || StringFind(singleTrailStatus, "OFF") >= 0) singleTrailColor = clrGray;
-      else if(StringFind(singleTrailStatus, "Disabled") >= 0) singleTrailColor = clrRed;
-      else if(StringFind(singleTrailStatus, "Skipped") >= 0 || StringFind(singleTrailStatus, "Skip") >= 0) singleTrailColor = clrOrange;
-      UpdateOrCreateLabel("SingleTrailStatusLabel", 10, 90, singleTrailStatus, singleTrailColor, 11, "Arial Bold");
+      if(g_showSingleTrailLabel) {
+         string singleTrailStatus = GetSingleTrailStatusInfo();
+         color singleTrailColor = clrCyan;
+         if(StringFind(singleTrailStatus, "ACTIVE") >= 0) singleTrailColor = clrYellow;
+         else if(StringFind(singleTrailStatus, "READY") >= 0 || StringFind(singleTrailStatus, "RDY") >= 0) singleTrailColor = clrLimeGreen;
+         else if(StringFind(singleTrailStatus, "NOT-USED") >= 0 || StringFind(singleTrailStatus, "OFF") >= 0) singleTrailColor = clrGray;
+         else if(StringFind(singleTrailStatus, "Disabled") >= 0) singleTrailColor = clrRed;
+         else if(StringFind(singleTrailStatus, "Skipped") >= 0 || StringFind(singleTrailStatus, "Skip") >= 0) singleTrailColor = clrOrange;
+         UpdateOrCreateLabel("SingleTrailStatusLabel", 10, 110, singleTrailStatus, singleTrailColor, 11, "Arial Bold");
+      } else {
+         ObjectDelete(0, "SingleTrailStatusLabel");
+      }
       
       // Label 5: Group Trail Status
-      string groupTrailStatus = GetGroupTrailStatusInfo();
-      color groupTrailColor = clrCyan;
-      if(StringFind(groupTrailStatus, "ACTIVE") >= 0 || StringFind(groupTrailStatus, "ON") >= 0) groupTrailColor = clrOrange;
-      else if(StringFind(groupTrailStatus, "READY") >= 0 || StringFind(groupTrailStatus, "RDY") >= 0) groupTrailColor = clrLimeGreen;
-      else if(StringFind(groupTrailStatus, "NOT-USED") >= 0 || StringFind(groupTrailStatus, "OFF") >= 0) groupTrailColor = clrGray;
-      else if(StringFind(groupTrailStatus, "Disabled") >= 0) groupTrailColor = clrRed;
-      else if(StringFind(groupTrailStatus, "Skipped") >= 0 || StringFind(groupTrailStatus, "Skip") >= 0) groupTrailColor = clrOrange;
-      UpdateOrCreateLabel("GroupTrailStatusLabel", 10, 110, groupTrailStatus, groupTrailColor, 11, "Arial Bold");
+      if(g_showGroupTrailLabel) {
+         string groupTrailStatus = GetGroupTrailStatusInfo();
+         color groupTrailColor = clrCyan;
+         if(StringFind(groupTrailStatus, "ACTIVE") >= 0 || StringFind(groupTrailStatus, "ON") >= 0) groupTrailColor = clrOrange;
+         else if(StringFind(groupTrailStatus, "READY") >= 0 || StringFind(groupTrailStatus, "RDY") >= 0) groupTrailColor = clrLimeGreen;
+         else if(StringFind(groupTrailStatus, "NOT-USED") >= 0 || StringFind(groupTrailStatus, "OFF") >= 0) groupTrailColor = clrGray;
+         else if(StringFind(groupTrailStatus, "Disabled") >= 0) groupTrailColor = clrRed;
+         else if(StringFind(groupTrailStatus, "Skipped") >= 0 || StringFind(groupTrailStatus, "Skip") >= 0) groupTrailColor = clrOrange;
+         UpdateOrCreateLabel("GroupTrailStatusLabel", 10, 130, groupTrailStatus, groupTrailColor, 11, "Arial Bold");
+      } else {
+         ObjectDelete(0, "GroupTrailStatusLabel");
+      }
       
       // Label 6: Total Trail Status
-      string totalTrailStatus = GetTotalTrailStatusInfo();
-      color totalTrailColor = clrCyan;
-      if(StringFind(totalTrailStatus, "ACTIVE") >= 0 || StringFind(totalTrailStatus, "ON") >= 0) totalTrailColor = clrBlue;
-      else if(StringFind(totalTrailStatus, "READY") >= 0 || StringFind(totalTrailStatus, "RDY") >= 0) totalTrailColor = clrLimeGreen;
-      else if(StringFind(totalTrailStatus, "WAIT") >= 0) totalTrailColor = clrGray;
-      else if(StringFind(totalTrailStatus, "BLOCKED") >= 0 || StringFind(totalTrailStatus, "BLOCK") >= 0) totalTrailColor = clrRed;
-      else if(StringFind(totalTrailStatus, "Disabled") >= 0) totalTrailColor = clrRed;
-      UpdateOrCreateLabel("TotalTrailStatusLabel", 10, 130, totalTrailStatus, totalTrailColor, 11, "Arial Bold");
+      if(g_showTotalTrailLabel) {
+         string totalTrailStatus = GetTotalTrailStatusInfo();
+         color totalTrailColor = clrCyan;
+         if(StringFind(totalTrailStatus, "ACTIVE") >= 0 || StringFind(totalTrailStatus, "ON") >= 0) totalTrailColor = clrBlue;
+         else if(StringFind(totalTrailStatus, "READY") >= 0 || StringFind(totalTrailStatus, "RDY") >= 0) totalTrailColor = clrLimeGreen;
+         else if(StringFind(totalTrailStatus, "WAIT") >= 0) totalTrailColor = clrGray;
+         else if(StringFind(totalTrailStatus, "BLOCKED") >= 0 || StringFind(totalTrailStatus, "BLOCK") >= 0) totalTrailColor = clrRed;
+         else if(StringFind(totalTrailStatus, "Disabled") >= 0) totalTrailColor = clrRed;
+         UpdateOrCreateLabel("TotalTrailStatusLabel", 10, 150, totalTrailStatus, totalTrailColor, 11, "Arial Bold");
+      } else {
+         ObjectDelete(0, "TotalTrailStatusLabel");
+      }
       
-      // Label 7: Current Level Info
+      // Calculate current level (used by multiple labels below)
       double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       int currentLevel = PriceLevelIndex(currentPrice, g_adaptiveGap);
       
-      // Find nearest BUY order (even level closest to current level)
-      int nearestBuyLevel = -999999;
+      // Label 7: Current Level Info
+      if(g_showLevelInfoLabel) {
+         // Find nearest BUY order (even level closest to current level)
+         int nearestBuyLevel = -999999;
       double nearestBuyLot = 0.0;
       ulong nearestBuyTicket = 0;
       int minBuyDistance = 999999;
@@ -4795,182 +5627,246 @@ void UpdateCurrentProfitVline() {
       
       string buyInfo = (nearestBuyLevel != -999999) ? StringFormat("%dB%.2f[%s]", nearestBuyLevel, nearestBuyLot, buyComment) : "-";
       string sellInfo = (nearestSellLevel != -999999) ? StringFormat("%dS%.2f[%s]", nearestSellLevel, nearestSellLot, sellComment) : "-";
-      string label4text = StringFormat("Lvl: C%d %s %s", currentLevel, buyInfo, sellInfo);
-      color label4Color = clrWhite;
-      UpdateOrCreateLabel("LevelInfoLabel", 10, 150, label4text, label4Color, 10, "Arial Bold");
+         string label4text = StringFormat("Lvl: C%d %s %s", currentLevel, buyInfo, sellInfo);
+         color label4Color = clrWhite;
+         UpdateOrCreateLabel("LevelInfoLabel", 10, 170, label4text, label4Color, 10, "Arial Bold");
+      } else {
+         ObjectDelete(0, "LevelInfoLabel");
+      }
       
       // Label 8: Nearby Orders
-      string nearbyText = GetNearbyOrdersText(currentLevel, 5); // 5 up, 5 down = 10 total
-      string label5text = StringFormat("Orders: %s", nearbyText);
-      color label5Color = clrCyan;
-      UpdateOrCreateLabel("NearbyOrdersLabel", 10, 170, label5text, label5Color, 10, "Arial Bold");
+      if(g_showNearbyOrdersLabel) {
+         string nearbyText = GetNearbyOrdersText(currentLevel, 5); // 5 up, 5 down = 10 total
+         string label5text = StringFormat("Orders: %s", nearbyText);
+         color label5Color = clrCyan;
+         UpdateOrCreateLabel("NearbyOrdersLabel", 10, 190, label5text, label5Color, 10, "Arial Bold");
+      } else {
+         ObjectDelete(0, "NearbyOrdersLabel");
+      }
       
       // Label 9: Last 5 Closes
-      string label6text = "Last5 Closes: ";
-      for(int i = 0; i < 5; i++) {
-         if(i < g_closeCount) {
-            label6text += StringFormat("%.2f", g_last5Closes[i]);
-         } else {
-            label6text += "-";
-         }
-         if(i < 4) label6text += " | ";
-      }
-      UpdateOrCreateLabel("Last5ClosesLabel", 10, 190, label6text, clrYellow, 9, "Arial");
-      
-      // Label 10: Last 5 Days Overall (from history)
-      string label7text = "Last5D Overall: ";
-      for(int i = 0; i < 5; i++) {
-         label7text += StringFormat("%.2f", g_historyOverallDaily[i]);
-         if(i < 4) label7text += " | ";
-      }
-      UpdateOrCreateLabel("Last5DaysOverallLabel", 10, 208, label7text, clrYellow, 9, "Arial");
-      
-      // Labels 11+: Last 5 Days Per Symbol (from history)
-      int yOffset = 226;
-      for(int s = 0; s < ArraySize(g_symbolHistory); s++) {
-         string symbolLabel = StringFormat("Last5D %s: ", g_symbolHistory[s].symbol);
+      if(g_showLast5ClosesLabel) {
+         string label6text = "Last5 Closes: ";
          for(int i = 0; i < 5; i++) {
-            symbolLabel += StringFormat("%.2f", g_symbolHistory[s].daily[i]);
-            if(i < 4) symbolLabel += " | ";
+            if(i < g_closeCount) {
+               label6text += StringFormat("%.2f", g_last5Closes[i]);
+            } else {
+               label6text += "-";
+            }
+            if(i < 4) label6text += " | ";
          }
-         string labelName = StringFormat("Last5DaysSymbol_%s", g_symbolHistory[s].symbol);
-         UpdateOrCreateLabel(labelName, 10, yOffset, symbolLabel, clrCyan, 9, "Arial");
-         yOffset += 18;
+         UpdateOrCreateLabel("Last5ClosesLabel", 10, 210, label6text, clrYellow, 9, "Arial");
+      } else {
+         ObjectDelete(0, "Last5ClosesLabel");
+      }
+      
+      // Label 10: History Display (based on mode)
+      if(g_showHistoryDisplayLabel) {
+         string historyLabel = "";
+         color historyColor = clrYellow;
+      
+      if(g_historyDisplayMode == 0) {
+         // Overall (All Symbols/All Magic)
+         historyLabel = "Last5D Overall: ";
+         for(int i = 0; i < 5; i++) {
+            historyLabel += StringFormat("%.0f", g_historyOverallDaily[i]);
+            if(i < 4) historyLabel += " | ";
+         }
+         historyColor = clrLightGreen;
+      }
+      else if(g_historyDisplayMode == 1) {
+         // Current Symbol (All Magic)
+         historyLabel = StringFormat("Last5D %s(AllMag): ", _Symbol);
+         for(int i = 0; i < 5; i++) {
+            historyLabel += StringFormat("%.0f", g_historySymbolDaily[i]);
+            if(i < 4) historyLabel += " | ";
+         }
+         historyColor = clrCyan;
+      }
+      else if(g_historyDisplayMode == 2) {
+         // Current Symbol (Current Magic) - for now show same as mode 1
+         historyLabel = StringFormat("Last5D %s(M%d): ", _Symbol, Magic);
+         for(int i = 0; i < 5; i++) {
+            historyLabel += StringFormat("%.0f", g_historySymbolDaily[i]);
+            if(i < 4) historyLabel += " | ";
+         }
+         historyColor = clrOrange;
+      }
+      else if(g_historyDisplayMode == 3) {
+         // Per-Symbol Breakdown (show first symbol or summary)
+         if(ArraySize(g_symbolHistory) > 0) {
+            historyLabel = "Last5D: ";
+            for(int s = 0; s < MathMin(2, ArraySize(g_symbolHistory)); s++) {
+               if(s > 0) historyLabel += " ";
+               historyLabel += StringFormat("%s:%.0f", g_symbolHistory[s].symbol, g_symbolHistory[s].daily[0]);
+            }
+            if(ArraySize(g_symbolHistory) > 2) {
+               historyLabel += StringFormat(" +%d more", ArraySize(g_symbolHistory) - 2);
+            }
+         } else {
+            historyLabel = "Last5D: No data";
+         }
+         historyColor = clrViolet;
+      }
+      
+      UpdateOrCreateLabel("HistoryDisplayLabel", 10, 228, historyLabel, historyColor, 9, "Arial Bold");
+      } else {
+         ObjectDelete(0, "HistoryDisplayLabel");
       }
    } else {
       // Delete all labels when show labels is OFF
       ObjectDelete(0, "CurrentProfitLabel");
       ObjectDelete(0, "PositionDetailsLabel");
       ObjectDelete(0, "SpreadEquityLabel");
+      ObjectDelete(0, "NextLotCalcLabel");
       ObjectDelete(0, "SingleTrailStatusLabel");
       ObjectDelete(0, "GroupTrailStatusLabel");
       ObjectDelete(0, "TotalTrailStatusLabel");
       ObjectDelete(0, "LevelInfoLabel");
       ObjectDelete(0, "NearbyOrdersLabel");
       ObjectDelete(0, "Last5ClosesLabel");
-      ObjectDelete(0, "Last5DaysOverallLabel");
-      // Delete per-symbol labels
-      for(int s = 0; s < ArraySize(g_symbolHistory); s++) {
-         string labelName = StringFormat("Last5DaysSymbol_%s", g_symbolHistory[s].symbol);
-         ObjectDelete(0, labelName);
-      }
+      ObjectDelete(0, "HistoryDisplayLabel");
    }
    
    // Center Panel Labels - controlled by show labels button
    if(g_showLabels) {
-      // Label 10: Center Label Line 1 - Total Profit / GLO
+      // Calculate center positions
       long chartWidth = ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
       long chartHeight = ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
       int centerX = (int)(chartWidth / 2);
       int centerY = (int)(chartHeight / 2);
       
-      int orderCountDiff = MathAbs(g_buyCount - g_sellCount);
-      string centerText = StringFormat("T%.0f/%d/%d", overallProfit, orderCountDiff, g_orders_in_loss);
-      color centerColor = (overallProfit >= 0) ? clrLime : clrRed;
-      
-      // Create center label with absolute positioning
-      string centerName = "CenterProfitLabel";
-      if(ObjectFind(0, centerName) < 0) {
-         ObjectCreate(0, centerName, OBJ_LABEL, 0, 0, 0);
-         ObjectSetInteger(0, centerName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-         ObjectSetInteger(0, centerName, OBJPROP_ANCHOR, ANCHOR_CENTER);
-         ObjectSetInteger(0, centerName, OBJPROP_XDISTANCE, centerX);
-         ObjectSetInteger(0, centerName, OBJPROP_YDISTANCE, centerY);
-         ObjectSetInteger(0, centerName, OBJPROP_FONTSIZE, CenterPanelFontSize);
-         ObjectSetString(0, centerName, OBJPROP_FONT, "Arial Bold");
-         ObjectSetInteger(0, centerName, OBJPROP_SELECTABLE, false);
-         ObjectSetInteger(0, centerName, OBJPROP_HIDDEN, false);
-         ObjectSetInteger(0, centerName, OBJPROP_BACK, false);
-         ObjectSetInteger(0, centerName, OBJPROP_ZORDER, 0);
+      // Line 1: Cycle Profit (centered)
+      if(g_showCenterCycleLabel) {
+         string cycleText = StringFormat("P%.0f", cycleProfit);
+         color cycleColor = (cycleProfit >= 0) ? clrLime : clrRed;
+         
+         string centerName = "CenterCycleLabel";
+         if(ObjectFind(0, centerName) < 0) {
+            ObjectCreate(0, centerName, OBJ_LABEL, 0, 0, 0);
+            ObjectSetInteger(0, centerName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+            ObjectSetInteger(0, centerName, OBJPROP_ANCHOR, ANCHOR_CENTER);
+            ObjectSetInteger(0, centerName, OBJPROP_XDISTANCE, centerX);
+            ObjectSetInteger(0, centerName, OBJPROP_YDISTANCE, centerY);
+            ObjectSetInteger(0, centerName, OBJPROP_FONTSIZE, CenterPanelFontSize);
+            ObjectSetString(0, centerName, OBJPROP_FONT, "Arial Bold");
+            ObjectSetInteger(0, centerName, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, centerName, OBJPROP_HIDDEN, false);
+            ObjectSetInteger(0, centerName, OBJPROP_BACK, false);
+            ObjectSetInteger(0, centerName, OBJPROP_ZORDER, 0);
+         } else {
+            ObjectSetInteger(0, centerName, OBJPROP_XDISTANCE, centerX);
+            ObjectSetInteger(0, centerName, OBJPROP_YDISTANCE, centerY);
+            ObjectSetInteger(0, centerName, OBJPROP_FONTSIZE, CenterPanelFontSize);
+         }
+         
+         ObjectSetString(0, centerName, OBJPROP_TEXT, cycleText);
+         ObjectSetInteger(0, centerName, OBJPROP_COLOR, cycleColor);
       } else {
-         // Update position in case chart was resized
-         ObjectSetInteger(0, centerName, OBJPROP_XDISTANCE, centerX);
-         ObjectSetInteger(0, centerName, OBJPROP_YDISTANCE, centerY);
-         ObjectSetInteger(0, centerName, OBJPROP_FONTSIZE, CenterPanelFontSize);
+         ObjectDelete(0, "CenterCycleLabel");
       }
       
-      ObjectSetString(0, centerName, OBJPROP_TEXT, centerText);
-      ObjectSetInteger(0, centerName, OBJPROP_COLOR, centerColor);
-      
-      // Label 11: Center Label Line 2 - Current Cycle Profit / Booked Profit in this Cycle
-      // bookedCycle is already calculated earlier in this function
-      
-      // Create cycle/booked label split into two parts for different colors
-      string centerName2Cycle = "CenterCycleLabel";
-      string centerName2Booked = "CenterBookedLabel";
-      // Calculate spacing based on first label's font size (font size + 25% padding)
+      // Line 2: Total Overall Profit (centered)
       int centerY2 = centerY + (int)(CenterPanelFontSize * 1.25);
       
-      // Calculate text widths for positioning (approximate)
-      string cycleText = StringFormat("P%.0f", cycleProfit);
-      string bookedText = StringFormat("E%.0f N%.2f", bookedCycle, g_netLots);
-      int cycleWidth = StringLen(cycleText) * 12; // Approximate pixel width per character
-      int bookedWidth = StringLen(bookedText) * 12;
-      int totalWidth = cycleWidth + bookedWidth + 20; // 20 for space between
-      
-      color cycleColor = (cycleProfit >= 0) ? clrLime : clrRed;
-      color bookedColor = (bookedCycle >= 0) ? clrLime : clrRed;
-      
-      // Create/update cycle profit label (left part)
-      if(ObjectFind(0, centerName2Cycle) < 0) {
-         ObjectCreate(0, centerName2Cycle, OBJ_LABEL, 0, 0, 0);
-         ObjectSetInteger(0, centerName2Cycle, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-         ObjectSetInteger(0, centerName2Cycle, OBJPROP_ANCHOR, ANCHOR_RIGHT);
-         ObjectSetInteger(0, centerName2Cycle, OBJPROP_FONTSIZE, CenterPanel2FontSize);
-         ObjectSetString(0, centerName2Cycle, OBJPROP_FONT, "Arial Bold");
-         ObjectSetInteger(0, centerName2Cycle, OBJPROP_SELECTABLE, false);
-         ObjectSetInteger(0, centerName2Cycle, OBJPROP_HIDDEN, false);
-         ObjectSetInteger(0, centerName2Cycle, OBJPROP_BACK, false);
-         ObjectSetInteger(0, centerName2Cycle, OBJPROP_ZORDER, 0);
+      if(g_showCenterProfitLabel) {
+         string centerText = StringFormat("T%.0f/%.0f", overallProfit, equity);
+         color centerColor = (overallProfit >= 0) ? clrLime : clrRed;
+         
+         string centerName = "CenterProfitLabel";
+         if(ObjectFind(0, centerName) < 0) {
+            ObjectCreate(0, centerName, OBJ_LABEL, 0, 0, 0);
+            ObjectSetInteger(0, centerName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+            ObjectSetInteger(0, centerName, OBJPROP_ANCHOR, ANCHOR_CENTER);
+            ObjectSetInteger(0, centerName, OBJPROP_XDISTANCE, centerX);
+            ObjectSetInteger(0, centerName, OBJPROP_YDISTANCE, centerY2);
+            ObjectSetInteger(0, centerName, OBJPROP_FONTSIZE, CenterPanel2FontSize);
+            ObjectSetString(0, centerName, OBJPROP_FONT, "Arial Bold");
+            ObjectSetInteger(0, centerName, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, centerName, OBJPROP_HIDDEN, false);
+            ObjectSetInteger(0, centerName, OBJPROP_BACK, false);
+            ObjectSetInteger(0, centerName, OBJPROP_ZORDER, 0);
+         } else {
+            ObjectSetInteger(0, centerName, OBJPROP_XDISTANCE, centerX);
+            ObjectSetInteger(0, centerName, OBJPROP_YDISTANCE, centerY2);
+            ObjectSetInteger(0, centerName, OBJPROP_FONTSIZE, CenterPanel2FontSize);
+         }
+         
+         ObjectSetString(0, centerName, OBJPROP_TEXT, centerText);
+         ObjectSetInteger(0, centerName, OBJPROP_COLOR, centerColor);
+      } else {
+         ObjectDelete(0, "CenterProfitLabel");
       }
-      ObjectSetInteger(0, centerName2Cycle, OBJPROP_XDISTANCE, centerX - 10);
-      ObjectSetInteger(0, centerName2Cycle, OBJPROP_YDISTANCE, centerY2);
-      ObjectSetInteger(0, centerName2Cycle, OBJPROP_FONTSIZE, CenterPanel2FontSize);
-      ObjectSetString(0, centerName2Cycle, OBJPROP_TEXT, cycleText);
-      ObjectSetInteger(0, centerName2Cycle, OBJPROP_COLOR, cycleColor);
       
-      // Create/update booked profit label (right part)
-      if(ObjectFind(0, centerName2Booked) < 0) {
-         ObjectCreate(0, centerName2Booked, OBJ_LABEL, 0, 0, 0);
-         ObjectSetInteger(0, centerName2Booked, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-         ObjectSetInteger(0, centerName2Booked, OBJPROP_ANCHOR, ANCHOR_LEFT);
-         ObjectSetInteger(0, centerName2Booked, OBJPROP_FONTSIZE, CenterPanel2FontSize);
-         ObjectSetString(0, centerName2Booked, OBJPROP_FONT, "Arial Bold");
-         ObjectSetInteger(0, centerName2Booked, OBJPROP_SELECTABLE, false);
-         ObjectSetInteger(0, centerName2Booked, OBJPROP_HIDDEN, false);
-         ObjectSetInteger(0, centerName2Booked, OBJPROP_BACK, false);
-         ObjectSetInteger(0, centerName2Booked, OBJPROP_ZORDER, 0);
-      }
-      ObjectSetInteger(0, centerName2Booked, OBJPROP_XDISTANCE, centerX + 10);
-      ObjectSetInteger(0, centerName2Booked, OBJPROP_YDISTANCE, centerY2);
-      ObjectSetInteger(0, centerName2Booked, OBJPROP_FONTSIZE, CenterPanel2FontSize);
-      ObjectSetString(0, centerName2Booked, OBJPROP_TEXT, bookedText);
-      ObjectSetInteger(0, centerName2Booked, OBJPROP_COLOR, bookedColor);
-      
-      // Label 12: Center Label Line 3 - Max Loss Cycle / Max Overall Loss / Max Lot Size
-      string centerName3 = "CenterNetLotsLabel";
+      // Line 3: Booked Profit + Open Profit (centered)
       int centerY3 = centerY2 + (int)(CenterPanel2FontSize * 1.25);
       
-      string netLotsText = StringFormat("L%.0f/%.0f/%.2f", g_maxLossCycle, g_overallMaxLoss, g_maxLotsCycle);
-      color netLotsColor = clrWhite;
-      
-      // Create/update net lots label (centered)
-      if(ObjectFind(0, centerName3) < 0) {
-         ObjectCreate(0, centerName3, OBJ_LABEL, 0, 0, 0);
-         ObjectSetInteger(0, centerName3, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-         ObjectSetInteger(0, centerName3, OBJPROP_ANCHOR, ANCHOR_CENTER);
-         ObjectSetInteger(0, centerName3, OBJPROP_FONTSIZE, CenterPanel2FontSize);
-         ObjectSetString(0, centerName3, OBJPROP_FONT, "Arial Bold");
-         ObjectSetInteger(0, centerName3, OBJPROP_SELECTABLE, false);
-         ObjectSetInteger(0, centerName3, OBJPROP_HIDDEN, false);
-         ObjectSetInteger(0, centerName3, OBJPROP_BACK, false);
-         ObjectSetInteger(0, centerName3, OBJPROP_ZORDER, 0);
+      if(g_showCenterBookedLabel) {
+         string centerName2Booked = "CenterBookedLabel";
+         string bookedText = StringFormat("E%.0f %.0f", bookedCycle, openProfit);
+         color bookedColor = (bookedCycle >= 0) ? clrLime : clrRed;
+         
+         // Create/update booked profit label (centered)
+         if(ObjectFind(0, centerName2Booked) < 0) {
+            ObjectCreate(0, centerName2Booked, OBJ_LABEL, 0, 0, 0);
+            ObjectSetInteger(0, centerName2Booked, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+            ObjectSetInteger(0, centerName2Booked, OBJPROP_ANCHOR, ANCHOR_CENTER);
+            ObjectSetInteger(0, centerName2Booked, OBJPROP_FONTSIZE, CenterPanel2FontSize);
+            ObjectSetString(0, centerName2Booked, OBJPROP_FONT, "Arial Bold");
+            ObjectSetInteger(0, centerName2Booked, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, centerName2Booked, OBJPROP_HIDDEN, false);
+            ObjectSetInteger(0, centerName2Booked, OBJPROP_BACK, false);
+            ObjectSetInteger(0, centerName2Booked, OBJPROP_ZORDER, 0);
+         }
+         ObjectSetInteger(0, centerName2Booked, OBJPROP_XDISTANCE, centerX);
+         ObjectSetInteger(0, centerName2Booked, OBJPROP_YDISTANCE, centerY3);
+         ObjectSetInteger(0, centerName2Booked, OBJPROP_FONTSIZE, CenterPanel2FontSize);
+         ObjectSetString(0, centerName2Booked, OBJPROP_TEXT, bookedText);
+         ObjectSetInteger(0, centerName2Booked, OBJPROP_COLOR, bookedColor);
+      } else {
+         ObjectDelete(0, "CenterBookedLabel");
       }
-      ObjectSetInteger(0, centerName3, OBJPROP_XDISTANCE, centerX);
-      ObjectSetInteger(0, centerName3, OBJPROP_YDISTANCE, centerY3);
-      ObjectSetInteger(0, centerName3, OBJPROP_FONTSIZE, CenterPanel2FontSize);
-      ObjectSetString(0, centerName3, OBJPROP_TEXT, netLotsText);
-      ObjectSetInteger(0, centerName3, OBJPROP_COLOR, netLotsColor);
+      
+      // Line 4: Net Lots / Order Count Difference / GLO / GPO (centered)
+      int centerY4 = centerY3 + (int)(CenterPanel2FontSize * 1.25);
+      
+      if(g_showCenterNetLotsLabel) {
+         string centerName3 = "CenterNetLotsLabel";
+         
+         // Determine which side has more orders and by how much
+         int orderCountDiff = MathAbs(g_buyCount - g_sellCount);
+         string orderDiffStr = "";
+         if(g_sellCount > g_buyCount) {
+            orderDiffStr = StringFormat("S%d", orderCountDiff);
+         } else if(g_buyCount > g_sellCount) {
+            orderDiffStr = StringFormat("B%d", orderCountDiff);
+         } else {
+            orderDiffStr = "E0"; // Equal
+         }
+         
+         string netLotsText = StringFormat("N%.2f/%s/%d/%d", g_netLots, orderDiffStr, g_orders_in_loss, g_orders_in_profit);
+         color netLotsColor = clrWhite;
+         
+         // Create/update net lots label (centered)
+         if(ObjectFind(0, centerName3) < 0) {
+            ObjectCreate(0, centerName3, OBJ_LABEL, 0, 0, 0);
+            ObjectSetInteger(0, centerName3, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+            ObjectSetInteger(0, centerName3, OBJPROP_ANCHOR, ANCHOR_CENTER);
+            ObjectSetInteger(0, centerName3, OBJPROP_FONTSIZE, CenterPanel2FontSize);
+            ObjectSetString(0, centerName3, OBJPROP_FONT, "Arial Bold");
+            ObjectSetInteger(0, centerName3, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, centerName3, OBJPROP_HIDDEN, false);
+            ObjectSetInteger(0, centerName3, OBJPROP_BACK, false);
+            ObjectSetInteger(0, centerName3, OBJPROP_ZORDER, 0);
+         }
+         ObjectSetInteger(0, centerName3, OBJPROP_XDISTANCE, centerX);
+         ObjectSetInteger(0, centerName3, OBJPROP_YDISTANCE, centerY4);
+         ObjectSetInteger(0, centerName3, OBJPROP_FONTSIZE, CenterPanel2FontSize);
+         ObjectSetString(0, centerName3, OBJPROP_TEXT, netLotsText);
+         ObjectSetInteger(0, centerName3, OBJPROP_COLOR, netLotsColor);
+      } else {
+         ObjectDelete(0, "CenterNetLotsLabel");
+      }
    } else {
       // Delete center panel labels when hidden
       ObjectDelete(0, "CenterProfitLabel");
@@ -4993,6 +5889,7 @@ void OnDeinit(const int reason) {
    ObjectDelete(0, "BtnSingleTrail");
    ObjectDelete(0, "BtnTotalTrail");
    ObjectDelete(0, "BtnTrailMethod");
+   ObjectDelete(0, "BtnVisibilityControls");  // Permanent control button
    ObjectDelete(0, "total_trail");  // Total trail floor line
    ObjectDelete(0, "CenterProfitLabel");
    ObjectDelete(0, "CenterCycleLabel");

@@ -8,7 +8,7 @@
 //============================= INPUTS =============================//
 // Core Trading Parameters
 input int    Magic = 12345;               // Magic number
-input double GapInPoints = 1000;         // Gap xau100 btc1000
+input double GapInPoints = 100;         // Gap xau100 btc1000
 input double BaseLotSize = 0.01;          // Starting lot size
 input int    DebugLevel = 3;              // Debug level (0=off, 1=critical, 2=info, 3=verbose)
 
