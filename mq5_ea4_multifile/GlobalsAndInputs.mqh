@@ -9,8 +9,8 @@
 //==================== CORE SETTINGS ====================//
 input group "═══════════════ CORE SETTINGS ═══════════════"
 input int    Magic = 12345;               // Magic number
-input double GapInPoints = 300;         // Gap xau100 btc1000
-input double BaseLotSize = 0.01;          // Starting lot size
+input double GapInPoints = 2000;         // Gap xau100 btc1000
+input double BaseLotSize = 0.1;          // Starting lot size
 input int    DebugLevel = 1;              // Debug level (0=off, 1=critical, 2=info, 3=verbose)
 
 //==================== LOT SIZE MANAGEMENT ====================//
@@ -29,11 +29,11 @@ enum ENUM_LOT_CALC_METHOD {
 // Scenario-Based Lot Sizing
 input string LotCalc_PrioritySequence = "1,2,3,4,5,6,7";              // Priority sequence for overlapping scenarios (comma-separated: 1-7)
 input ENUM_LOT_CALC_METHOD LotCalc_Boundary = LOT_CALC_TOTAL_ORDERS;          // Case 1: Boundary orders (topmost BUY, bottommost SELL)
-input ENUM_LOT_CALC_METHOD LotCalc_Direction = LOT_CALC_GLO_GPO_DIFF;          // Case 2: Direction orders (towards movement, opposite to accumulation)
-input ENUM_LOT_CALC_METHOD LotCalc_Counter = LOT_CALC_GPO;           // Case 3: Counter-direction orders (against movement)
+input ENUM_LOT_CALC_METHOD LotCalc_Direction = LOT_CALC_GLO;          // Case 2: Direction orders (towards movement, opposite to accumulation)
+input ENUM_LOT_CALC_METHOD LotCalc_Counter = LOT_CALC_BUY_SELL_DIFF;           // Case 3: Counter-direction orders (against movement)
 input ENUM_LOT_CALC_METHOD LotCalc_GPO_More = LOT_CALC_IGNORE;          // Case 4: When GPO > GLO (more profit than loss)
 input ENUM_LOT_CALC_METHOD LotCalc_GLO_More = LOT_CALC_IGNORE;           // Case 5: When GLO > GPO (more loss than profit)
-input ENUM_LOT_CALC_METHOD LotCalc_Centered = LOT_CALC_GLO;          // Case 6: Centered position (balanced buy/sell distribution)
+input ENUM_LOT_CALC_METHOD LotCalc_Centered = LOT_CALC_IGNORE;          // Case 6: Centered position (balanced buy/sell distribution)
 input ENUM_LOT_CALC_METHOD LotCalc_Sided = LOT_CALC_IGNORE;              // Case 7: Sided position (unbalanced distribution)
 input int CenteredThreshold = 2;  // Max buy/sell count difference to consider centered (Case 6 vs Case 7)
 
@@ -44,8 +44,8 @@ enum ENUM_ORDER_STRATEGY {
    ORDER_STRATEGY_BOUNDARY_DIRECTIONAL = 1, // Wait for direction change - BUY needs N SELLs below, SELL needs N BUYs above
    ORDER_STRATEGY_FAR_ADJACENT = 2         // Flexible adjacent check (Distance=start point, Depth=how many levels)
 };
-input ENUM_ORDER_STRATEGY OrderPlacementStrategy = ORDER_STRATEGY_FAR_ADJACENT; // Order placement strategy
-input int BoundaryDirectionalCount = 5;  // Number of opposite orders required for BOUNDARY_DIRECTIONAL (waiting for direction change)
+input ENUM_ORDER_STRATEGY OrderPlacementStrategy = ORDER_STRATEGY_BOUNDARY_DIRECTIONAL; // Order placement strategy
+input int BoundaryDirectionalCount = 3;  // Number of opposite orders required for BOUNDARY_DIRECTIONAL (waiting for direction change)
 input int FarAdjacentDistance = 3;       // Starting distance for FAR_ADJACENT (1=adjacent, 3=skip 1 level, 5=skip 2 levels)
 input int FarAdjacentDepth = 5;          // Number of opposite-type levels to check from starting distance (1=strict, higher=flexible)
 
@@ -57,7 +57,7 @@ enum ENUM_BOUNDARY_STRATEGY {
    BOUNDARY_STRATEGY_NO_TOTAL_TRAIL = 3,   // Only when total trail is not active
    BOUNDARY_STRATEGY_GLO_MORE = 4          // Only when GLO > GPO
 };
-input ENUM_BOUNDARY_STRATEGY BoundaryOrderStrategy = BOUNDARY_STRATEGY_ALWAYS; // Strategy for boundary orders (topmost BUY, bottommost SELL)
+input ENUM_BOUNDARY_STRATEGY BoundaryOrderStrategy = BOUNDARY_STRATEGY_TRAIL_LAST; // Strategy for boundary orders (topmost BUY, bottommost SELL)
 input int BoundaryStrategyHelper = 10;   // Helper value for boundary strategies (e.g., max order count for strategy 2)
 
 enum ENUM_ORDER_PLACEMENT_TYPE {
@@ -94,7 +94,7 @@ enum ENUM_SINGLE_TRAIL_GAP {
    SINGLE_GAP_DYNAMIC = 2          // Dynamic - calculate based on order profit and lot size
 };
 input ENUM_SINGLE_TRAIL_GAP SingleTrailGapMethod = SINGLE_GAP_PERCENTAGE; // Trail gap calculation method
-input double SingleTrailGapValue = 50.0; // Gap helper: points, percentage, or multiplier depending on method
+input double SingleTrailGapValue = 20.0; // Gap helper: points, percentage, or multiplier depending on method
 
 //==================== GROUP TRAIL CLOSING ====================//
 input group "═══════════════ GROUP TRAIL CLOSING ═══════════════"
@@ -129,12 +129,12 @@ bool   EnableTotalTrailing = true;  // Enable total profit trailing
 // --- Total Trail Start Triggers ---
 input group "--- TOTAL TRAIL START TRIGGERS ---"
 input double TrailStartPct = 0.10;   // Start trail at % of max loss (0.10 = 10%)
-input double TrailProfitPct = 0.85;  // Start trail at % of max profit touched (0.85 = 85%)
+input double TrailProfitPct = 0.50;  // Start trail at % of max profit touched (0.50 = 50%)
 
 // --- Total Trail Gap ---
 input group "--- TOTAL TRAIL GAP ---"
 input double TrailGapPct = 0.50;     // Trail gap as % of start value (0.50 = 50%)
-input double MaxTrailGap = 2500.0;   // Maximum trail gap (absolute cap)
+input double MaxTrailGap = 1000.0;   // Maximum trail gap (absolute cap)
 
 enum ENUM_TRAIL_ORDER_MODE {
    TRAIL_ORDERS_NONE = 0,           // No new orders during trail
@@ -172,14 +172,14 @@ double MaxGapPoints = GapInPoints*1.10;        // Maximum gap points
 //==================== DISPLAY SETTINGS ====================//
 input group "═══════════════ DISPLAY SETTINGS ═══════════════"
 input bool   ShowLabels = true;         // Show chart labels (disable for performance)
-input bool   ShowOrderLabels = false;   // Show order open/close labels on chart
-input bool   ShowNextLevelLines = false; // Show next level lines on chart
-input color  LevelLineColor = clrWhite; // Color for level lines
-input int    LevelLabelFontSize = 8;    // Font size for level line labels
+input bool   ShowOrderLabels = true;   // Show order open/close labels on chart
+input bool   ShowNextLevelLines = true; // Show next level lines on chart
+input color  LevelLineColor = clrGray; // Color for level lines
+input int    LevelLabelFontSize = 12;    // Font size for level line labels
 input double MaxLossVlineThreshold = 100.0;  // Min loss to show max loss vline (0 = always show)
 input int    VlineOffsetCandles = 2;   // Current profit vline offset in candles from current time
-input int    CenterPanelFontSize = 36;   // Font size for main center label (Overall Profit & Net Lots)
-input int    CenterPanel2FontSize = 24;  // Font size for second center label (Cycle & Booked Profit)
+input int    CenterPanelFontSize = 100;   // Font size for main center label (Overall Profit & Net Lots)
+input int    CenterPanel2FontSize = 50;  // Font size for second center label (Cycle & Booked Profit)
 
 //==================== BUTTON POSITIONING ====================//
 input group "═══════════════ BUTTON POSITIONING ═══════════════"
