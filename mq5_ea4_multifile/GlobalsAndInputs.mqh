@@ -5,12 +5,16 @@
 #property strict
 
 //============================= INPUTS =============================//
-// Core Trading Parameters
+
+//==================== CORE SETTINGS ====================//
+input group "═══════════════ CORE SETTINGS ═══════════════"
 input int    Magic = 12345;               // Magic number
 input double GapInPoints = 300;         // Gap xau100 btc1000
 input double BaseLotSize = 0.01;          // Starting lot size
 input int    DebugLevel = 1;              // Debug level (0=off, 1=critical, 2=info, 3=verbose)
 
+//==================== LOT SIZE MANAGEMENT ====================//
+input group "═══════════════ LOT SIZE MANAGEMENT ═══════════════"
 // Lot Calculation Methods (applied per scenario)
 enum ENUM_LOT_CALC_METHOD {
    LOT_CALC_BASE = 0,           // Base lot size only
@@ -33,37 +37,8 @@ input ENUM_LOT_CALC_METHOD LotCalc_Centered = LOT_CALC_GLO;          // Case 6: 
 input ENUM_LOT_CALC_METHOD LotCalc_Sided = LOT_CALC_IGNORE;              // Case 7: Sided position (unbalanced distribution)
 input int CenteredThreshold = 2;  // Max buy/sell count difference to consider centered (Case 6 vs Case 7)
 
-// Risk Management (simplified)
-input int    MaxPositions = 9999999;         // Maximum open positions
-input double MaxTotalLots = 9999999;        // Maximum total lot exposure
-input double MaxLossLimit = 9999999;       // Maximum loss limit
-input double DailyProfitTarget = 9999999;  // Daily profit target to stop trading
-
-// total Profit Trailing
-bool   EnableTotalTrailing = true;  // Enable total profit trailing
-double TrailStartPct = 0.10;        // Start trail at % of max loss (0.10 = 10%)
-double TrailProfitPct = 0.85;       // Start trail at % of max profit (0.85 = 85%)
-double TrailGapPct = 0.50;          // Trail gap as % of start value (0.50 = 50%)
-double MaxTrailGap = 2500.0;         // Maximum trail gap (absolute cap)
-
-enum ENUM_TRAIL_ORDER_MODE {
-   TRAIL_ORDERS_NONE = 0,           // No new orders during trail
-   TRAIL_ORDERS_NORMAL = 1,         // Allow normal orders with calculated lot sizes
-   TRAIL_ORDERS_BASESIZE = 2,       // Allow orders but only with base lot size
-   TRAIL_ORDERS_PROFIT_DIR = 3,     // Allow only profit direction orders with base lot size
-   TRAIL_ORDERS_REVERSE_DIR = 4     // Allow only reverse direction orders with base lot size
-};
-input ENUM_TRAIL_ORDER_MODE TrailOrderMode = TRAIL_ORDERS_PROFIT_DIR;  // Order behavior during total trailing
-
-enum ENUM_TRAIL_LOT_MODE {
-   TRAIL_LOT_BASE = 0,              // Base lot size only
-   TRAIL_LOT_GLO = 1,               // Base lot size * GLO count
-   TRAIL_LOT_GPO = 2,               // Base lot size * GPO count
-   TRAIL_LOT_DIFF = 3,              // Base lot size * abs(GPO - GLO)
-   TRAIL_LOT_TOTAL = 4              // Base lot size * total order count
-};
-input ENUM_TRAIL_LOT_MODE TrailLotMode = TRAIL_LOT_BASE;  // Lot size calculation during total trailing
-
+//==================== ORDER PLACEMENT ====================//
+input group "═══════════════ ORDER PLACEMENT ═══════════════"
 enum ENUM_ORDER_STRATEGY {
    ORDER_STRATEGY_NONE = 0,                // No checks - always allow orders
    ORDER_STRATEGY_BOUNDARY_DIRECTIONAL = 1, // Wait for direction change - BUY needs N SELLs below, SELL needs N BUYs above
@@ -90,7 +65,17 @@ enum ENUM_ORDER_PLACEMENT_TYPE {
    ORDER_PLACEMENT_FLEXIBLE = 1   // Flexible - also fill missed adjacent level orders
 };
 input ENUM_ORDER_PLACEMENT_TYPE OrderPlacementType = ORDER_PLACEMENT_NORMAL; // Order placement type
+input int OrderPlacementDelayMs = 0;  // Delay between orders in milliseconds (0 = no delay)
 
+enum ENUM_NO_POSITIONS_ACTION {
+   NO_POS_NONE = 0,           // None - no intervention
+   NO_POS_NEAREST_LEVEL = 1,  // Open single order at nearest level
+   NO_POS_BOTH_LEVELS = 2     // Open both BUY and SELL at nearest levels
+};
+input ENUM_NO_POSITIONS_ACTION NoPositionsAction = NO_POS_NEAREST_LEVEL; // Action when no open positions
+
+//==================== SINGLE TRAIL CLOSING ====================//
+input group "═══════════════ SINGLE TRAIL CLOSING ═══════════════"
 bool   EnableSingleTrailing = true; // Enable single position trailing
 input double SingleProfitThreshold = -1; // Profit per 0.01 lot to start trail (negative = auto-calc from gap)
 
@@ -118,14 +103,49 @@ input double HybridGLOPercentage = 0.4;     // GLO ratio threshold to switch (0.
 input double HybridBalanceFactor = 2.0;     // Imbalance factor for smart switching (buyLots/sellLots or vice versa)
 input int    HybridCountDiffThreshold = 5;  // Order count difference threshold (for HYBRID_COUNT_DIFF)
 
-// Adaptive Gap
+//==================== TOTAL TRAIL CLOSING ====================//
+input group "═══════════════ TOTAL TRAIL CLOSING ═══════════════"
+bool   EnableTotalTrailing = true;  // Enable total profit trailing
+double TrailStartPct = 0.10;        // Start trail at % of max loss (0.10 = 10%)
+double TrailProfitPct = 0.85;       // Start trail at % of max profit (0.85 = 85%)
+double TrailGapPct = 0.50;          // Trail gap as % of start value (0.50 = 50%)
+double MaxTrailGap = 2500.0;         // Maximum trail gap (absolute cap)
+
+enum ENUM_TRAIL_ORDER_MODE {
+   TRAIL_ORDERS_NONE = 0,           // No new orders during trail
+   TRAIL_ORDERS_NORMAL = 1,         // Allow normal orders with calculated lot sizes
+   TRAIL_ORDERS_BASESIZE = 2,       // Allow orders but only with base lot size
+   TRAIL_ORDERS_PROFIT_DIR = 3,     // Allow only profit direction orders with base lot size
+   TRAIL_ORDERS_REVERSE_DIR = 4     // Allow only reverse direction orders with base lot size
+};
+input ENUM_TRAIL_ORDER_MODE TrailOrderMode = TRAIL_ORDERS_PROFIT_DIR;  // Order behavior during total trailing
+
+enum ENUM_TRAIL_LOT_MODE {
+   TRAIL_LOT_BASE = 0,              // Base lot size only
+   TRAIL_LOT_GLO = 1,               // Base lot size * GLO count
+   TRAIL_LOT_GPO = 2,               // Base lot size * GPO count
+   TRAIL_LOT_DIFF = 3,              // Base lot size * abs(GPO - GLO)
+   TRAIL_LOT_TOTAL = 4              // Base lot size * total order count
+};
+input ENUM_TRAIL_LOT_MODE TrailLotMode = TRAIL_LOT_BASE;  // Lot size calculation during total trailing
+
+//==================== RISK MANAGEMENT ====================//
+input group "═══════════════ RISK MANAGEMENT ═══════════════"
+input int    MaxPositions = 9999999;         // Maximum open positions
+input double MaxTotalLots = 9999999;        // Maximum total lot exposure
+input double MaxLossLimit = 9999999;       // Maximum loss limit
+input double DailyProfitTarget = 9999999;  // Daily profit target to stop trading
+
+//==================== ADAPTIVE GAP ====================//
+input group "═══════════════ ADAPTIVE GAP ═══════════════"
 input bool   UseAdaptiveGap = false;       // Use ATR-based adaptive gap
 int    ATRPeriod = 14;              // ATR period for adaptive gap
 double ATRMultiplier = 1.5;         // ATR multiplier
 double MinGapPoints = GapInPoints/2;         // Minimum gap points
 double MaxGapPoints = GapInPoints*1.10;        // Maximum gap points
 
-// Display Settings
+//==================== DISPLAY SETTINGS ====================//
+input group "═══════════════ DISPLAY SETTINGS ═══════════════"
 input bool   ShowLabels = true;         // Show chart labels (disable for performance)
 input bool   ShowOrderLabels = false;   // Show order open/close labels on chart
 input bool   ShowNextLevelLines = false; // Show next level lines on chart
@@ -133,32 +153,16 @@ input color  LevelLineColor = clrWhite; // Color for level lines
 input int    LevelLabelFontSize = 8;    // Font size for level line labels
 input double MaxLossVlineThreshold = 100.0;  // Min loss to show max loss vline (0 = always show)
 input int    VlineOffsetCandles = 2;   // Current profit vline offset in candles from current time
+input int    CenterPanelFontSize = 36;   // Font size for main center label (Overall Profit & Net Lots)
+input int    CenterPanel2FontSize = 24;  // Font size for second center label (Cycle & Booked Profit)
 
-// Trade Logging Settings
-input bool   EnableTradeLogging = false;  // Enable trade activity logging to CSV file
-
-// Button Initial States
-input bool   InitialStopNewOrders = false; // Initial state for Stop New Orders button
-input bool   InitialNoWork = false;        // Initial state for No Work button
-input int    InitialSingleTrailMode = 2;   // Initial Single Trail Mode (0=Tight, 1=Normal, 2=Loose)
-input int    InitialTotalTrailMode = 1;    // Initial Total Trail Mode (0=Tight, 1=Normal, 2=Loose)
-input bool   InitialShowButtons = false;   // Initial state for main buttons visibility (false = hidden at start)
-input bool   InitialShowLevelLines = false; // Initial state for level lines display (false = hidden at start)
-
-// Order Placement Settings
-input int    OrderPlacementDelayMs = 0;  // Delay between orders in milliseconds (0 = no delay)
-
-enum ENUM_NO_POSITIONS_ACTION {
-   NO_POS_NONE = 0,           // None - no intervention
-   NO_POS_NEAREST_LEVEL = 1,  // Open single order at nearest level
-   NO_POS_BOTH_LEVELS = 2     // Open both BUY and SELL at nearest levels
-};
-input ENUM_NO_POSITIONS_ACTION NoPositionsAction = NO_POS_NEAREST_LEVEL; // Action when no open positions
-
-// Button Positioning
+//==================== BUTTON POSITIONING ====================//
+input group "═══════════════ BUTTON POSITIONING ═══════════════"
 input int    BtnXDistance = 200;         // Button X distance from right edge
 input int    BtnYDistance = 60;         // Button Y distance from top edge
 
+//==================== CONTROL PANEL POSITIONING ====================//
+input group "═══════════════ CONTROL PANEL POSITIONING ═══════════════"
 // Control Buttons (Show/Hide) Positioning
 enum ENUM_CTRL_CORNER {
    CTRL_CORNER_RIGHT_LOWER = 0,  // Right Lower
@@ -175,11 +179,18 @@ input ENUM_CTRL_CORNER CtrlPanelCorner = CTRL_CORNER_RIGHT_UPPER; // Panel corne
 input int    CtrlPanelXDistance = 200;   // Panel X distance from edge
 input int    CtrlPanelYDistance = 10;    // Panel Y distance from edge
 
-// Center Panel Display
-input int    CenterPanelFontSize = 36;   // Font size for main center label (Overall Profit & Net Lots)
-input int    CenterPanel2FontSize = 24;  // Font size for second center label (Cycle & Booked Profit)
+//==================== INITIAL STATES ====================//
+input group "═══════════════ INITIAL STATES ═══════════════"
+input bool   InitialStopNewOrders = false; // Initial state for Stop New Orders button
+input bool   InitialNoWork = false;        // Initial state for No Work button
+input int    InitialSingleTrailMode = 2;   // Initial Single Trail Mode (0=Tight, 1=Normal, 2=Loose)
+input int    InitialTotalTrailMode = 1;    // Initial Total Trail Mode (0=Tight, 1=Normal, 2=Loose)
+input bool   InitialShowButtons = false;   // Initial state for main buttons visibility (false = hidden at start)
+input bool   InitialShowLevelLines = false; // Initial state for level lines display (false = hidden at start)
 
-// Starting Equity
+//==================== LOGGING & TRACKING ====================//
+input group "═══════════════ LOGGING & TRACKING ═══════════════"
+input bool   EnableTradeLogging = false;  // Enable trade activity logging to CSV file
 input double StartingEquityInput = 0.0; // Starting equity (0 = use current equity at init)
 input double LastCloseEquityInput = 0.0; // Last close equity (0 = use current equity at init)
 
