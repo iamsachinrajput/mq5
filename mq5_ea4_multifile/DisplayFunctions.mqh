@@ -986,35 +986,20 @@ void CreateSelectionPanel(string panelType) {
    // Lines Control Panel - Individual line type show/hide
    else if(panelType == "LinesControl") {
       g_activeSelectionPanel = "LinesControl";
-      // Add a separate button for Label Lines and Level Lines
-      string lineTexts[] = {"VLines", "HLines", "Next Lines", "Label Lines", "Level Lines", "Order Labels"};
-      bool lineStates[] = {g_showVLines, g_showHLines, g_showNextLevelLines, g_showLabelLines, g_showLevelLines, g_showOrderLabelsCtrl};
-      int lineCount = 6;
+      // 3 buttons: Next Lines (next buy/sell indicators), Level Lines (grid levels), Order Labels (text labels)
+      string lineTexts[] = {"Next Lines", "Level Lines", "Order Labels"};
+      bool lineStates[] = {g_showNextLevelLines, g_showLevelLines, g_showOrderLabelsCtrl};
+      int lineCount = 3;
 
       // Calculate panel height and align background with buttons
       int panelYOffset = yOffset;
-      int panelHeight = (lineCount + 1) * (buttonHeight + 5) + 20;
+      int panelHeight = lineCount * (buttonHeight + 5) + 20;
       ObjectSetInteger(0, bgName, OBJPROP_YSIZE, panelHeight);
       ObjectSetInteger(0, bgName, OBJPROP_YDISTANCE, topMargin + panelYOffset);
 
-      // Create ALL button at the top
-      string btnAllName = "SelectLine_ALL";
-      bool allVisible = g_showVLines && g_showHLines && g_showNextLevelLines && g_showLabelLines && g_showLevelLines && g_showOrderLabelsCtrl;
+      // No ALL button for this simplified panel - direct control only
 
-      ObjectCreate(0, btnAllName, OBJ_BUTTON, 0, 0, 0);
-      ObjectSetInteger(0, btnAllName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
-      ObjectSetInteger(0, btnAllName, OBJPROP_XDISTANCE, rightMargin + buttonWidth + 20);
-      ObjectSetInteger(0, btnAllName, OBJPROP_YDISTANCE, topMargin + panelYOffset + 5);
-      ObjectSetInteger(0, btnAllName, OBJPROP_XSIZE, 160);
-      ObjectSetInteger(0, btnAllName, OBJPROP_YSIZE, buttonHeight);
-      ObjectSetString(0, btnAllName, OBJPROP_TEXT, allVisible ? "✓ ALL" : "✗ ALL");
-      ObjectSetInteger(0, btnAllName, OBJPROP_BGCOLOR, allVisible ? clrDarkGreen : clrDarkRed);
-      ObjectSetInteger(0, btnAllName, OBJPROP_COLOR, clrWhite);
-      ObjectSetInteger(0, btnAllName, OBJPROP_FONTSIZE, 10);
-      ObjectSetInteger(0, btnAllName, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, btnAllName, OBJPROP_HIDDEN, true);
-
-      int btnYOffset = panelYOffset + buttonHeight + 10;
+      int btnYOffset = panelYOffset + 10;
       for(int i = 0; i < lineCount; i++) {
          string btnName = StringFormat("SelectLine_%d", i);
          ObjectCreate(0, btnName, OBJ_BUTTON, 0, 0, 0);
@@ -1134,10 +1119,8 @@ void DestroySelectionPanel() {
       }
    }
    else if(g_activeSelectionPanel == "LinesControl") {
-      // Delete ALL button
-      ObjectDelete(0, "SelectLine_ALL");
-      // Delete all 6 line selection buttons (VLines, HLines, Next Lines, Label Lines, Level Lines, Order Labels)
-      for(int i = 0; i < 6; i++) {
+      // Delete only 3 line selection buttons (Next Lines, Level Lines, Order Labels)
+      for(int i = 0; i < 3; i++) {
          ObjectDelete(0, StringFormat("SelectLine_%d", i));
       }
    }
@@ -1599,68 +1582,29 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       }
       
       // Handle Label Control selections
-      // Handle Lines Control selections
-      // Handle ALL lines toggle
-      if(sparam == "SelectLine_ALL") {
-         bool allVisible = g_showVLines && g_showHLines && g_showNextLevelLines && g_showOrderLabelsCtrl;
-         
-         // Toggle all lines to opposite of current state
-         bool newState = !allVisible;
-         g_showVLines = newState;
-         g_showHLines = newState;
-         g_showNextLevelLines = newState;
-         g_showLevelLines = newState;  // Sync level lines with next lines
-         g_showOrderLabelsCtrl = newState;
-         
-         // Apply visibility changes
-         if(!g_showNextLevelLines) {
-            RemoveLevelLines();
-         } else {
-            DrawLevelLines();
-         }
-         ApplyVisibilitySettings();
-         
-         // Update ALL button appearance
-         ObjectSetInteger(0, "SelectLine_ALL", OBJPROP_BGCOLOR, newState ? clrDarkGreen : clrDarkRed);
-         ObjectSetString(0, "SelectLine_ALL", OBJPROP_TEXT, newState ? "✓ ALL" : "✗ ALL");
-         
-         // Update all individual line buttons
-         string lineNames[] = {"VLines", "HLines", "Next Lines", "Order Labels"};
-         for(int i = 0; i < 4; i++) {
-            string btnName = StringFormat("SelectLine_%d", i);
-            ObjectSetInteger(0, btnName, OBJPROP_BGCOLOR, newState ? clrDarkGreen : clrDarkRed);
-            ObjectSetString(0, btnName, OBJPROP_TEXT, newState ? ("✓ " + lineNames[i]) : ("✗ " + lineNames[i]));
-         }
-         
-         Log(2, StringFormat("All lines toggled: %s", newState ? "VISIBLE" : "HIDDEN"));
-      }
+      // Handle Lines Control selections (no ALL button anymore)
       
-      if(StringFind(sparam, "SelectLine_") >= 0 && sparam != "SelectLine_ALL") {
+      if(StringFind(sparam, "SelectLine_") >= 0) {
          int selectedLine = (int)StringToInteger(StringSubstr(sparam, 11));
          
          // Toggle the selected line type
          switch(selectedLine) {
-            case 0: // VLines
-               g_showVLines = !g_showVLines;
-               ApplyVisibilitySettings();
-               Log(1, StringFormat("VLines: %s", g_showVLines ? "VISIBLE" : "HIDDEN"));
-               break;
-            case 1: // HLines
-               g_showHLines = !g_showHLines;
-               ApplyVisibilitySettings();
-               Log(1, StringFormat("HLines: %s", g_showHLines ? "VISIBLE" : "HIDDEN"));
-               break;
-            case 2: // Next Lines
+            case 0: // Next Lines - shows next buy/sell level indicators
                g_showNextLevelLines = !g_showNextLevelLines;
-               g_showLevelLines = g_showNextLevelLines;  // Sync level lines
-               if(!g_showNextLevelLines) {
+               Log(1, StringFormat("Next Lines: %s", g_showNextLevelLines ? "VISIBLE" : "HIDDEN"));
+               break;
+               
+            case 1: // Level Lines - shows grid level lines only
+               g_showLevelLines = !g_showLevelLines;
+               if(!g_showLevelLines) {
                   RemoveLevelLines();
                } else {
                   DrawLevelLines();
                }
-               Log(1, StringFormat("Next Lines: %s", g_showNextLevelLines ? "VISIBLE" : "HIDDEN"));
+               Log(1, StringFormat("Level Lines: %s", g_showLevelLines ? "VISIBLE" : "HIDDEN"));
                break;
-            case 3: // Order Labels
+               
+            case 2: // Order Labels - shows order placement/close text labels
                g_showOrderLabelsCtrl = !g_showOrderLabelsCtrl;
                if(!g_showOrderLabelsCtrl) {
                   HideAllOrderLabels();
@@ -1674,13 +1618,12 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          // Update button appearance
          string btnName = StringFormat("SelectLine_%d", selectedLine);
          bool isVisible = false;
-         string lineNames[] = {"VLines", "HLines", "Next Lines", "Order Labels"};
+         string lineNames[] = {"Next Lines", "Level Lines", "Order Labels"};
          
          switch(selectedLine) {
-            case 0: isVisible = g_showVLines; break;
-            case 1: isVisible = g_showHLines; break;
-            case 2: isVisible = g_showNextLevelLines; break;
-            case 3: isVisible = g_showOrderLabelsCtrl; break;
+            case 0: isVisible = g_showNextLevelLines; break;
+            case 1: isVisible = g_showLevelLines; break;
+            case 2: isVisible = g_showOrderLabelsCtrl; break;
          }
          
          ObjectSetInteger(0, btnName, OBJPROP_BGCOLOR, isVisible ? clrDarkGreen : clrDarkRed);
