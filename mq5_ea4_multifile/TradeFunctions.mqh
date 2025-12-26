@@ -1478,7 +1478,7 @@ void UpdateGroupTrailing(bool useSameTypeOnly = false) {
    
    // Need at least one losing order and some profitable orders to trail
    if(worstLossTicket == 0 || profitableCount == 0) {
-      if(worstLossTicket > 0 && profitableCount == 0 && SingleTrailMethod == SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE) {
+      if(worstLossTicket > 0 && profitableCount == 0 && GroupTrailMethod == GROUP_TRAIL_CLOSETOGETHER_SAMETYPE) {
          string lossTypeStr = (worstLossType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
          Log(3, StringFormat("GT | Skip: Worst loss is %s but no profitable %s orders found", lossTypeStr, lossTypeStr));
       }
@@ -1719,31 +1719,39 @@ void PrintCurrentStats() {
        methodNames[LotCalc_Sided]));
    Log(1, StringFormat("CenteredThreshold:%d", CenteredThreshold));
    
-   string trailMethodStr = "";
-   switch(g_currentTrailMethod) {
-      case SINGLE_TRAIL_NORMAL: trailMethodStr = "NORMAL"; break;
-      case SINGLE_TRAIL_CLOSETOGETHER: trailMethodStr = "ANYSIDE"; break;
-      case SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE: trailMethodStr = "SAMETYPE"; break;
-      case SINGLE_TRAIL_DYNAMIC: trailMethodStr = "DYNAMIC"; break;
-      case SINGLE_TRAIL_DYNAMIC_SAMETYPE: trailMethodStr = "DYN-SAME"; break;
-      case SINGLE_TRAIL_DYNAMIC_ANYSIDE: trailMethodStr = "DYN-ANY"; break;
-      case SINGLE_TRAIL_HYBRID_BALANCED: trailMethodStr = "HYB-BAL"; break;
-      case SINGLE_TRAIL_HYBRID_ADAPTIVE: trailMethodStr = "HYB-ADP"; break;
-      case SINGLE_TRAIL_HYBRID_SMART: trailMethodStr = "HYB-SMART"; break;
-      case SINGLE_TRAIL_HYBRID_COUNT_DIFF: trailMethodStr = "HYB-CNT"; break;
-      default: trailMethodStr = StringFormat("%d", g_currentTrailMethod); break;
+   string singleActivationStr = "";
+   switch(SingleTrailActivation) {
+      case SINGLE_ACTIVATION_IGNORE: singleActivationStr = "IGNORE"; break;
+      case SINGLE_ACTIVATION_PROFIT: singleActivationStr = "PROFIT"; break;
+      case SINGLE_ACTIVATION_LEVEL: singleActivationStr = "LEVEL"; break;
+      default: singleActivationStr = StringFormat("%d", SingleTrailActivation); break;
+   }
+   
+   string groupMethodStr = "";
+   switch(g_currentGroupTrailMethod) {
+      case GROUP_TRAIL_IGNORE: groupMethodStr = "IGNORE"; break;
+      case GROUP_TRAIL_CLOSETOGETHER: groupMethodStr = "ANYSIDE"; break;
+      case GROUP_TRAIL_CLOSETOGETHER_SAMETYPE: groupMethodStr = "SAMETYPE"; break;
+      case GROUP_TRAIL_DYNAMIC: groupMethodStr = "DYNAMIC"; break;
+      case GROUP_TRAIL_DYNAMIC_SAMETYPE: groupMethodStr = "DYN-SAME"; break;
+      case GROUP_TRAIL_DYNAMIC_ANYSIDE: groupMethodStr = "DYN-ANY"; break;
+      case GROUP_TRAIL_HYBRID_BALANCED: groupMethodStr = "HYB-BAL"; break;
+      case GROUP_TRAIL_HYBRID_ADAPTIVE: groupMethodStr = "HYB-ADP"; break;
+      case GROUP_TRAIL_HYBRID_SMART: groupMethodStr = "HYB-SMART"; break;
+      case GROUP_TRAIL_HYBRID_COUNT_DIFF: groupMethodStr = "HYB-CNT"; break;
+      default: groupMethodStr = StringFormat("%d", g_currentGroupTrailMethod); break;
    }
    
    string sTrailModeStr = (g_singleTrailMode == 0) ? "TIGHT" : (g_singleTrailMode == 1) ? "NORMAL" : "LOOSE";
    string tTrailModeStr = (g_totalTrailMode == 0) ? "TIGHT" : (g_totalTrailMode == 1) ? "NORMAL" : "LOOSE";
    string debugLevelStr = (g_currentDebugLevel == 0) ? "OFF" : (g_currentDebugLevel == 1) ? "CRITICAL" : (g_currentDebugLevel == 2) ? "INFO" : "VERBOSE";
    
-   Log(1, StringFormat("TrailMethod:%s | STrail:%s | TTrail:%s",
-       trailMethodStr, sTrailModeStr, tTrailModeStr));
+   Log(1, StringFormat("SingleTrail:%s(%.1f) | GroupTrail:%s | SMode:%s | TMode:%s",
+       singleActivationStr, SingleActivationValue, groupMethodStr, sTrailModeStr, tTrailModeStr));
    Log(1, StringFormat("DebugLevel:%s | ShowLabels:%s | ShowNextLines:%s",
        debugLevelStr, g_showLabels ? "YES" : "NO", g_showNextLevelLines ? "YES" : "NO"));
-   Log(1, StringFormat("SingleThreshold:%.0f | MinGLO:%d | DynGLO:%d | MinGroupProfit:%.0f",
-       SingleProfitThreshold, MinGLOForGroupTrail, DynamicGLOThreshold, MinGroupProfitToClose));
+   Log(1, StringFormat("SingleGap:%d(%.1f) | MinGLO:%d | DynGLO:%d | MinGroupProfit:%.0f",
+       SingleTrailGapMethod, SingleTrailGapValue, MinGLOForGroupTrail, DynamicGLOThreshold, MinGroupProfitToClose));
    Log(1, StringFormat("HybridNetLots:%.1f | HybridGLO%%:%.0f%% | HybridBalance:%.1f | HybridCountDiff:%d",
        HybridNetLotsThreshold, HybridGLOPercentage * 100, HybridBalanceFactor, HybridCountDiffThreshold));
    Log(1, StringFormat("OrderStrategy:%d | PlacementType:%d | FarAdj Dist:%d Depth:%d",
@@ -1853,9 +1861,9 @@ string GetSingleTrailStatusInfo() {
    string methodName = "";
    bool shouldUseSingle = false;
    
-   if(g_currentTrailMethod == SINGLE_TRAIL_DYNAMIC || 
-      g_currentTrailMethod == SINGLE_TRAIL_DYNAMIC_SAMETYPE || 
-      g_currentTrailMethod == SINGLE_TRAIL_DYNAMIC_ANYSIDE) {
+   if(g_currentGroupTrailMethod == GROUP_TRAIL_DYNAMIC || 
+      g_currentGroupTrailMethod == GROUP_TRAIL_DYNAMIC_SAMETYPE || 
+      g_currentGroupTrailMethod == GROUP_TRAIL_DYNAMIC_ANYSIDE) {
       methodName = "DYN";
       shouldUseSingle = (g_orders_in_loss < DynamicGLOThreshold);
       if(shouldUseSingle) {
@@ -1864,7 +1872,7 @@ string GetSingleTrailStatusInfo() {
          return StringFormat("ST:OFF[%s] G:%d>=%d", methodName, g_orders_in_loss, DynamicGLOThreshold);
       }
    }
-   else if(g_currentTrailMethod == SINGLE_TRAIL_HYBRID_BALANCED) {
+   else if(g_currentGroupTrailMethod == GROUP_TRAIL_HYBRID_BALANCED) {
       methodName = "HB";
       double netExposure = MathAbs(g_netLots);
       shouldUseSingle = (netExposure < HybridNetLotsThreshold);
@@ -1874,7 +1882,7 @@ string GetSingleTrailStatusInfo() {
          return StringFormat("ST:OFF[%s] NL:%.2f>=%.2f", methodName, netExposure, HybridNetLotsThreshold);
       }
    }
-   else if(g_currentTrailMethod == SINGLE_TRAIL_HYBRID_ADAPTIVE) {
+   else if(g_currentGroupTrailMethod == GROUP_TRAIL_HYBRID_ADAPTIVE) {
       methodName = "HA";
       int totalOrders = g_buyCount + g_sellCount;
       double gloRatio = (totalOrders > 0) ? (double)g_orders_in_loss / totalOrders : 0.0;
@@ -1887,7 +1895,7 @@ string GetSingleTrailStatusInfo() {
          return StringFormat("ST:OFF[%s] G:%.0f%%>=%.0f%% P:%.0f", methodName, gloRatio*100, HybridGLOPercentage*100, cycleProfit);
       }
    }
-   else if(g_currentTrailMethod == SINGLE_TRAIL_HYBRID_SMART) {
+   else if(g_currentGroupTrailMethod == GROUP_TRAIL_HYBRID_SMART) {
       methodName = "HS";
       double netExposure = MathAbs(g_netLots);
       int totalOrders = g_buyCount + g_sellCount;
@@ -1910,7 +1918,7 @@ string GetSingleTrailStatusInfo() {
          return StringFormat("ST:OFF[%s] R:%d/4 I:%d G:%d C:%d N:%d", methodName, riskFactors, highImbalance?1:0, highGLO?1:0, negativeCycle?1:0, highNetExposure?1:0);
       }
    }
-   else if(g_currentTrailMethod == SINGLE_TRAIL_HYBRID_COUNT_DIFF) {
+   else if(g_currentGroupTrailMethod == GROUP_TRAIL_HYBRID_COUNT_DIFF) {
       methodName = "HC";
       int countDiff = MathAbs(g_buyCount - g_sellCount);
       shouldUseSingle = (countDiff <= HybridCountDiffThreshold);
@@ -1920,8 +1928,8 @@ string GetSingleTrailStatusInfo() {
          return StringFormat("ST:OFF[%s] D:%d>%d", methodName, countDiff, HybridCountDiffThreshold);
       }
    }
-   else if(g_currentTrailMethod == SINGLE_TRAIL_CLOSETOGETHER || 
-           g_currentTrailMethod == SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE) {
+   else if(g_currentGroupTrailMethod == GROUP_TRAIL_CLOSETOGETHER || 
+           g_currentGroupTrailMethod == GROUP_TRAIL_CLOSETOGETHER_SAMETYPE) {
       return "ST:OFF[GRP-ONLY]";
    }
    else {
@@ -2020,9 +2028,9 @@ string GetGroupTrailStatusInfo() {
    string methodName = "";
    bool shouldUseGroup = false;
    
-   if(g_currentTrailMethod == SINGLE_TRAIL_DYNAMIC || 
-      g_currentTrailMethod == SINGLE_TRAIL_DYNAMIC_SAMETYPE || 
-      g_currentTrailMethod == SINGLE_TRAIL_DYNAMIC_ANYSIDE) {
+   if(g_currentGroupTrailMethod == GROUP_TRAIL_DYNAMIC || 
+      g_currentGroupTrailMethod == GROUP_TRAIL_DYNAMIC_SAMETYPE || 
+      g_currentGroupTrailMethod == GROUP_TRAIL_DYNAMIC_ANYSIDE) {
       methodName = "DYN";
       shouldUseGroup = (g_orders_in_loss >= DynamicGLOThreshold);
       if(shouldUseGroup) {
@@ -2032,7 +2040,7 @@ string GetGroupTrailStatusInfo() {
          return StringFormat("GT:OFF[%s] G:%d<%d", methodName, g_orders_in_loss, DynamicGLOThreshold);
       }
    }
-   else if(g_currentTrailMethod == SINGLE_TRAIL_HYBRID_BALANCED) {
+   else if(g_currentGroupTrailMethod == GROUP_TRAIL_HYBRID_BALANCED) {
       methodName = "HB";
       double netExposure = MathAbs(g_netLots);
       shouldUseGroup = (netExposure >= HybridNetLotsThreshold);
@@ -2043,7 +2051,7 @@ string GetGroupTrailStatusInfo() {
          return StringFormat("GT:OFF[%s] NL:%.2f<%.2f", methodName, netExposure, HybridNetLotsThreshold);
       }
    }
-   else if(g_currentTrailMethod == SINGLE_TRAIL_HYBRID_ADAPTIVE) {
+   else if(g_currentGroupTrailMethod == GROUP_TRAIL_HYBRID_ADAPTIVE) {
       methodName = "HA";
       int totalOrders = g_buyCount + g_sellCount;
       double gloRatio = (totalOrders > 0) ? (double)g_orders_in_loss / totalOrders : 0.0;
@@ -2057,7 +2065,7 @@ string GetGroupTrailStatusInfo() {
          return StringFormat("GT:OFF[%s] G:%.0f%%<%.0f%% P:%.0f", methodName, gloRatio*100, HybridGLOPercentage*100, cycleProfit);
       }
    }
-   else if(g_currentTrailMethod == SINGLE_TRAIL_HYBRID_SMART) {
+   else if(g_currentGroupTrailMethod == GROUP_TRAIL_HYBRID_SMART) {
       methodName = "HS";
       double netExposure = MathAbs(g_netLots);
       int totalOrders = g_buyCount + g_sellCount;
@@ -2081,7 +2089,7 @@ string GetGroupTrailStatusInfo() {
          return StringFormat("GT:OFF[%s] R:%d/4", methodName, riskFactors);
       }
    }
-   else if(g_currentTrailMethod == SINGLE_TRAIL_HYBRID_COUNT_DIFF) {
+   else if(g_currentGroupTrailMethod == GROUP_TRAIL_HYBRID_COUNT_DIFF) {
       methodName = "HC";
       int countDiff = MathAbs(g_buyCount - g_sellCount);
       shouldUseGroup = (countDiff > HybridCountDiffThreshold);
@@ -2092,11 +2100,11 @@ string GetGroupTrailStatusInfo() {
          return StringFormat("GT:OFF[%s] D:%d<=%d", methodName, countDiff, HybridCountDiffThreshold);
       }
    }
-   else if(g_currentTrailMethod == SINGLE_TRAIL_CLOSETOGETHER) {
+   else if(g_currentGroupTrailMethod == GROUP_TRAIL_CLOSETOGETHER) {
       string details = GetGroupTrailCandidateDetails();
       return StringFormat("GT:RDY[ANY]|%s", details);
    }
-   else if(g_currentTrailMethod == SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE) {
+   else if(g_currentGroupTrailMethod == GROUP_TRAIL_CLOSETOGETHER_SAMETYPE) {
       string details = GetGroupTrailCandidateDetails();
       return StringFormat("GT:RDY[SAME]|%s", details);
    }
@@ -2158,21 +2166,155 @@ void TrailSinglePositions() {
       return;
    }
    
+   // Check if single trail is disabled
+   if(SingleTrailActivation == SINGLE_ACTIVATION_IGNORE) {
+      Log(3, "Single trail: IGNORE mode - skipping single trail");
+   } else {
+      // Process single trail for individual orders
+      ProcessSingleTrail();
+   }
+   
+   // Check if group trail is disabled
+   if(GroupTrailMethod == GROUP_TRAIL_IGNORE) {
+      Log(3, "Group trail: IGNORE mode - skipping group trail");
+      return;
+   }
+   
+   // Process group trail methods
+   ProcessGroupTrail();
+}
+
+void ProcessSingleTrail() {
+   double effectiveThreshold = CalculateSingleThreshold();
+   
+   for(int i = 0; i < g_orderCount; i++) {
+      if(!g_orders[i].isValid) continue;
+      
+      ulong ticket = g_orders[i].ticket;
+      if(!PositionSelectByTicket(ticket)) continue;
+      
+      double lots = PositionGetDouble(POSITION_VOLUME);
+      double profit = PositionGetDouble(POSITION_PROFIT);
+      double profitPer01 = (lots > 0) ? (profit / lots) * 0.01 : 0.0;
+      
+      int trailIdx = FindTrailIndex(ticket);
+      bool isTrailing = (trailIdx >= 0);
+      
+      // Determine if order should start trailing based on activation method
+      bool shouldStartTrail = false;
+      
+      if(SingleTrailActivation == SINGLE_ACTIVATION_PROFIT) {
+         // Profit-based activation
+         shouldStartTrail = (profitPer01 >= effectiveThreshold);
+      } else if(SingleTrailActivation == SINGLE_ACTIVATION_LEVEL) {
+         // Level-based activation
+         int levelCount = (int)SingleActivationValue;
+         if(levelCount <= 0) levelCount = 2; // Default to 2 levels
+         
+         // Calculate how many levels in profit
+         double currentPrice = (g_orders[i].type == POSITION_TYPE_BUY) ? 
+                               SymbolInfoDouble(_Symbol, SYMBOL_BID) : 
+                               SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         double openPrice = g_orders[i].openPrice;
+         double priceDiff = (g_orders[i].type == POSITION_TYPE_BUY) ? 
+                            (currentPrice - openPrice) : 
+                            (openPrice - currentPrice);
+         int levelsInProfit = (int)(priceDiff / g_adaptiveGap);
+         
+         shouldStartTrail = (levelsInProfit >= levelCount);
+         
+         if(levelsInProfit > 0 && trailIdx < 0) {
+            Log(3, StringFormat("ST LEVEL CHECK %s #%I64u: %d levels in profit (need %d to activate)",
+                g_orders[i].type == POSITION_TYPE_BUY ? "BUY" : "SELL",
+                ticket, levelsInProfit, levelCount));
+         }
+      }
+      
+      // Start new trail
+      if(!isTrailing && shouldStartTrail) {
+         double gap = CalculateSingleTrailGap(effectiveThreshold, profitPer01);
+         AddTrail(ticket, profitPer01, effectiveThreshold);
+         trailIdx = FindTrailIndex(ticket);
+         if(trailIdx >= 0) {
+            g_trails[trailIdx].gap = gap;
+         }
+         
+         string activationTypeStr = (SingleTrailActivation == SINGLE_ACTIVATION_PROFIT) ? "PROFIT" : "LEVEL";
+         Log(2, StringFormat("ST START %s #%I64u PPL=%.2f | Activation=%s Threshold=%.2f Gap=%.2f (%.1f%s)", 
+             g_orders[i].type == POSITION_TYPE_BUY ? "BUY" : "SELL",
+             ticket, profitPer01, activationTypeStr, effectiveThreshold, gap,
+             SingleTrailGapValue, 
+             SingleTrailGapMethod == SINGLE_GAP_FIXED ? "pts" : 
+             SingleTrailGapMethod == SINGLE_GAP_PERCENTAGE ? "%" : "dyn"));
+         continue;
+      }
+      
+      // Update existing trail
+      if(isTrailing) {
+         double peak = g_trails[trailIdx].peakPPL;
+         
+         // Update peak if profit increased
+         if(profitPer01 > peak) {
+            Log(3, StringFormat("ST PEAK UPDATE #%I64u: %.2f -> %.2f", ticket, peak, profitPer01));
+            g_trails[trailIdx].peakPPL = profitPer01;
+            peak = profitPer01;
+         }
+         
+         double gap = g_trails[trailIdx].gap;
+         double threshold = g_trails[trailIdx].threshold;
+         
+         // Activation logic based on trail mode
+         double activationThreshold = effectiveThreshold / 2.0;
+         bool shouldActivate = (profitPer01 <= activationThreshold && profitPer01 > 0) || (peak >= effectiveThreshold * 2.0);
+         
+         if(!g_trails[trailIdx].active && shouldActivate) {
+            g_trails[trailIdx].active = true;
+            g_trails[trailIdx].activePeak = peak;
+            Log(2, StringFormat("ST ACTIVATED #%I64u: PPL=%.2f Peak=%.2f Threshold=%.2f", 
+                ticket, profitPer01, peak, activationThreshold));
+         }
+         
+         // Trail close logic
+         if(g_trails[trailIdx].active) {
+            double activePeak = g_trails[trailIdx].activePeak;
+            if(profitPer01 > activePeak) {
+               g_trails[trailIdx].activePeak = profitPer01;
+               activePeak = profitPer01;
+            }
+            
+            double trailFloor = activePeak - gap;
+            if(profitPer01 <= trailFloor && profitPer01 > 0) {
+               Log(1, StringFormat("ST CLOSE #%I64u: PPL=%.2f <= Floor=%.2f | Peak=%.2f Gap=%.2f",
+                   ticket, profitPer01, trailFloor, activePeak, gap));
+               
+               if(trade.PositionClose(ticket)) {
+                  RemoveTrail(ticket);
+                  string typeStr = (g_orders[i].type == ORDER_TYPE_BUY) ? "BUY" : "SELL";
+                  LogTradeAction("SingleTrailClose", typeStr, ticket, lots, 0, profit);
+               }
+            }
+         }
+      }
+   }
+}
+
+void ProcessGroupTrail() {
    // Dynamic methods: choose based on GLO count
-   if(g_currentTrailMethod == SINGLE_TRAIL_DYNAMIC || 
-      g_currentTrailMethod == SINGLE_TRAIL_DYNAMIC_SAMETYPE || 
-      g_currentTrailMethod == SINGLE_TRAIL_DYNAMIC_ANYSIDE) {
+   if(g_currentGroupTrailMethod == GROUP_TRAIL_DYNAMIC || 
+      g_currentGroupTrailMethod == GROUP_TRAIL_DYNAMIC_SAMETYPE || 
+      g_currentGroupTrailMethod == GROUP_TRAIL_DYNAMIC_ANYSIDE) {
       if(g_orders_in_loss >= DynamicGLOThreshold) {
          // GLO count is high - use group trailing with appropriate mode
-         bool useSameType = (g_currentTrailMethod == SINGLE_TRAIL_DYNAMIC_SAMETYPE);
+         bool useSameType = (g_currentGroupTrailMethod == GROUP_TRAIL_DYNAMIC_SAMETYPE);
          UpdateGroupTrailing(useSameType);
          return;
       }
-      // GLO count is low - continue with normal single trailing below
+      // GLO count is low - skip group trail
+      return;
    }
    
    // Hybrid Balanced: Switch based on net exposure imbalance
-   if(g_currentTrailMethod == SINGLE_TRAIL_HYBRID_BALANCED) {
+   if(g_currentGroupTrailMethod == GROUP_TRAIL_HYBRID_BALANCED) {
       double netExposure = MathAbs(g_netLots);
       if(netExposure >= HybridNetLotsThreshold) {
          // High imbalance - use group close to reduce exposure
@@ -2181,16 +2323,13 @@ void TrailSinglePositions() {
              netExposure, HybridNetLotsThreshold, useSameType ? 1 : 0));
          UpdateGroupTrailing(useSameType);
          return;
-      } else {
-         // Balanced grid - use single trail
-         Log(3, StringFormat("HYBRID_BALANCED: Net exposure %.2f < %.2f, using SINGLE trail", 
-             netExposure, HybridNetLotsThreshold));
-         // Continue to normal single trailing below
       }
+      // Balanced grid - skip group trail
+      return;
    }
    
    // Hybrid Adaptive: Switch based on GLO ratio and profit state
-   if(g_currentTrailMethod == SINGLE_TRAIL_HYBRID_ADAPTIVE) {
+   if(g_currentGroupTrailMethod == GROUP_TRAIL_HYBRID_ADAPTIVE) {
       int totalOrders = g_buyCount + g_sellCount;
       double gloRatio = (totalOrders > 0) ? (double)g_orders_in_loss / totalOrders : 0.0;
       double equity = AccountInfoDouble(ACCOUNT_EQUITY);
@@ -2202,16 +2341,13 @@ void TrailSinglePositions() {
              gloRatio * 100, HybridGLOPercentage * 100, cycleProfit));
          UpdateGroupTrailing(true); // Same type only when adapting
          return;
-      } else {
-         // Good conditions - use single trail
-         Log(3, StringFormat("HYBRID_ADAPTIVE: GLO ratio %.1f%% < %.1f%% AND cycleProfit %.2f >= 0, using SINGLE trail", 
-             gloRatio * 100, HybridGLOPercentage * 100, cycleProfit));
-         // Continue to normal single trailing below
       }
+      // Good conditions - skip group trail
+      return;
    }
    
    // Hybrid Smart: Multiple factors (net exposure + GLO ratio + cycle profit)
-   if(g_currentTrailMethod == SINGLE_TRAIL_HYBRID_SMART) {
+   if(g_currentGroupTrailMethod == GROUP_TRAIL_HYBRID_SMART) {
       double netExposure = MathAbs(g_netLots);
       int totalOrders = g_buyCount + g_sellCount;
       double gloRatio = (totalOrders > 0) ? (double)g_orders_in_loss / totalOrders : 0.0;
@@ -2235,187 +2371,33 @@ void TrailSinglePositions() {
       if(riskFactors >= 2) {
          // 2 or more risk factors - use group close
          bool useSameType = (riskFactors >= 3); // 3+ factors = same type only (stricter)
-         Log(2, StringFormat("HYBRID_SMART: %d risk factors detected (Imb=%.1f>%.1f:%d, GLO=%.0f%%>%.0f%%:%d, CycleP=%.2f<%.2f:%d, NetL=%.2f>%.2f:%d), using GROUP close (sameType=%d)",
-             riskFactors, imbalanceFactor, HybridBalanceFactor, highImbalance ? 1 : 0,
-             gloRatio * 100, HybridGLOPercentage * 100, highGLO ? 1 : 0,
-             cycleProfit, -MathAbs(g_maxLossCycle * 0.3), negativeCycle ? 1 : 0,
-             netExposure, HybridNetLotsThreshold, highNetExposure ? 1 : 0,
-             useSameType ? 1 : 0));
+         Log(2, StringFormat("HYBRID_SMART: %d risk factors detected, using GROUP close (sameType=%d)",
+             riskFactors, useSameType ? 1 : 0));
          UpdateGroupTrailing(useSameType);
          return;
-      } else {
-         // Low risk - use single trail
-         Log(3, StringFormat("HYBRID_SMART: Only %d risk factors, using SINGLE trail (Imb=%.1f, GLO=%.0f%%, CycleP=%.2f, NetL=%.2f)",
-             riskFactors, imbalanceFactor, gloRatio * 100, cycleProfit, netExposure));
-         // Continue to normal single trailing below
       }
+      // Low risk - skip group trail
+      return;
    }
    
-   // Hybrid Count Diff: Switch based on buy/sell order count difference
-   if(g_currentTrailMethod == SINGLE_TRAIL_HYBRID_COUNT_DIFF) {
+   // Hybrid Count Diff: Switch based on buy/sell count difference
+   if(g_currentGroupTrailMethod == GROUP_TRAIL_HYBRID_COUNT_DIFF) {
       int countDiff = MathAbs(g_buyCount - g_sellCount);
-      
-      if(countDiff > HybridCountDiffThreshold) {
-         // High imbalance in order counts - use group close with any side
-         Log(2, StringFormat("HYBRID_COUNT_DIFF: Order count diff %d > %d (Buy=%d, Sell=%d), using GROUP close (any-side)",
-             countDiff, HybridCountDiffThreshold, g_buyCount, g_sellCount));
-         UpdateGroupTrailing(false); // Any side to help balance the grid
+      if(countDiff >= HybridCountDiffThreshold) {
+         // High count difference - use group close
+         Log(2, StringFormat("HYBRID_COUNT_DIFF: Count diff %d >= %d, using GROUP close",
+             countDiff, HybridCountDiffThreshold));
+         UpdateGroupTrailing(true); // Same type to balance
          return;
-      } else {
-         // Balanced order counts - use single trail
-         Log(3, StringFormat("HYBRID_COUNT_DIFF: Order count diff %d <= %d (Buy=%d, Sell=%d), using SINGLE trail",
-             countDiff, HybridCountDiffThreshold, g_buyCount, g_sellCount));
-         // Continue to normal single trailing below
       }
+      // Balanced count - skip group trail
+      return;
    }
    
-   // Route to appropriate trailing method
-   if(g_currentTrailMethod == SINGLE_TRAIL_CLOSETOGETHER) {
+   // Direct group trail methods (CLOSETOGETHER, CLOSETOGETHER_SAMETYPE)
+   if(g_currentGroupTrailMethod == GROUP_TRAIL_CLOSETOGETHER) {
       UpdateGroupTrailing(false); // Any side
-      return;
-   }
-   
-   if(g_currentTrailMethod == SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE) {
+   } else if(g_currentGroupTrailMethod == GROUP_TRAIL_CLOSETOGETHER_SAMETYPE) {
       UpdateGroupTrailing(true); // Same type only
-      return;
-   }
-   
-   // Normal single trailing logic below
-   if(g_trailActive) return; // Skip when total trailing active
-   
-   // Skip closing in No Work mode
-   if(g_noWork) return;
-   
-   // Get effective threshold (auto-calc if input is negative)
-   double effectiveThreshold = CalculateSingleThreshold();
-   
-   int currentTick = (int)GetTickCount();  // For throttling logs
-   
-   for(int i = PositionsTotal() - 1; i >= 0; i--) {
-      ulong ticket = PositionGetTicket(i);
-      if(!PositionSelectByTicket(ticket)) continue;
-      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-      if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
-      
-      double lots = PositionGetDouble(POSITION_VOLUME);
-      double profit = PositionGetDouble(POSITION_PROFIT);
-      
-      if(lots < 0.001) continue;
-      
-      double profitPer01 = (profit / lots) * 0.01;
-      int idx = FindTrailIndex(ticket);
-      
-      // Start tracking only when profit reaches threshold
-      if(profitPer01 >= effectiveThreshold && idx < 0) {
-         AddTrail(ticket, profitPer01, effectiveThreshold);
-         idx = FindTrailIndex(ticket);
-         
-         // Apply trail mode multiplier: Tight=0.5x, Normal=1.0x, Loose=2.0x
-         double baseGap = effectiveThreshold / 2.0;
-         double modeMultiplier = (g_singleTrailMode == 0) ? 0.5 : ((g_singleTrailMode == 2) ? 2.0 : 1.0);
-         double gapValue = baseGap * modeMultiplier;
-         
-         // Update the trail gap in the array
-         int trailIdx = FindTrailIndex(ticket);
-         if(trailIdx >= 0) g_trails[trailIdx].gap = gapValue;
-         
-         string levelInfo = GetLevelInfoForTicket(ticket);
-         string modeName = (g_singleTrailMode == 0) ? "TIGHT" : ((g_singleTrailMode == 2) ? "LOOSE" : "NORMAL");
-         Log(2, StringFormat("ST START %s #%I64u PPL=%.2f | Threshold=%.2f Gap=%.2f (%.1fx-%s) ActivateAt=%.2f", 
-             levelInfo, ticket, profitPer01, effectiveThreshold, gapValue, modeMultiplier, modeName, effectiveThreshold / 2.0));
-         
-         // Log single trail start
-         if(PositionSelectByTicket(ticket)) {
-            double posProfit = PositionGetDouble(POSITION_PROFIT);
-            string reason = StringFormat("PPL:%.2f >= Threshold:%.2f Mode:%s Gap:%.2f", 
-                                        profitPer01, effectiveThreshold, modeName, gapValue);
-            LogSingleTrailStart(ticket, posProfit, reason);
-         }
-      }
-      
-      // Update tracking
-      if(idx >= 0) {
-         double peak = g_trails[idx].peakPPL;
-         double activePeak = g_trails[idx].activePeak;
-         double gap = g_trails[idx].gap;
-         bool active = g_trails[idx].active;
-         
-         // Update peak if profit still positive and higher (before activation)
-         if(!active && profitPer01 > 0 && profitPer01 > peak) {
-            g_trails[idx].peakPPL = profitPer01;
-            peak = profitPer01;
-            string levelInfo = GetLevelInfoForTicket(ticket);
-            Log(3, StringFormat("ST TRACK %s #%I64u peak=%.2f | AwaitingActivation", levelInfo, ticket, peak));
-         }
-         
-         // Activate when drops to half threshold OR when peak reaches 2x threshold
-         // This ensures high-profit positions also trail
-         double activationThreshold = effectiveThreshold / 2.0;
-         bool shouldActivate = (profitPer01 <= activationThreshold && profitPer01 > 0) || (peak >= effectiveThreshold * 2.0);
-         
-         if(!active && shouldActivate) {
-            g_trails[idx].active = true;
-            g_trails[idx].activePeak = peak;  // Set peak at activation point (use tracked peak, not current)
-            active = true;
-            activePeak = peak;
-            string levelInfo = GetLevelInfoForTicket(ticket);
-            Log(1, StringFormat("ST ACTIVE %s #%I64u peak=%.2f | Current=%.2f | Ready to Trail", 
-                levelInfo, ticket, activePeak, profitPer01));
-            UpdateSingleTrailLines(); // Create horizontal line
-         }
-         
-         // Update active peak (trail upward after activation)
-         if(active && profitPer01 > activePeak) {
-            g_trails[idx].activePeak = profitPer01;
-            activePeak = profitPer01;
-            string levelInfo = GetLevelInfoForTicket(ticket);
-            Log(2, StringFormat("ST PEAK UPDATE %s #%I64u peak=%.2f", levelInfo, ticket, activePeak));
-            UpdateSingleTrailLines(); // Update horizontal line
-         }
-         
-         // Show continuous trail status when active (throttle to avoid spam - every 500ms)
-         if(active) {
-            double trailFloorValue = activePeak - gap;
-            if(currentTick - g_trails[idx].lastLogTick >= 500) {  // Log every 500ms
-               string levelInfo = GetLevelInfoForTicket(ticket);
-               Log(3, StringFormat("ST STATUS %s #%I64u | Peak=%.2f Current=%.2f Floor=%.2f Drop=%.2f", 
-                   levelInfo, ticket, activePeak, profitPer01, trailFloorValue, activePeak - profitPer01));
-               g_trails[idx].lastLogTick = currentTick;
-            }
-            
-            // Close if current PPL drops below or equal to trail floor
-            if(profitPer01 <= trailFloorValue) {
-               // Get position details before closing
-               string posType = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? "BUY" : "SELL";
-               double posLots = PositionGetDouble(POSITION_VOLUME);
-               double posProfit = PositionGetDouble(POSITION_PROFIT);
-               double drop = activePeak - profitPer01;
-               string levelInfo = GetLevelInfoForTicket(ticket);
-               
-               Log(1, StringFormat("ST CLOSE %s #%I64u %s %.2f lots | Profit=%.2f | Trail Stats: Peak=%.2f Current=%.2f Drop=%.2f TrailMin=%.2f", 
-                   levelInfo, ticket, posType, posLots, posProfit, activePeak, profitPer01, drop, trailFloorValue));
-               
-               // Log single trail close
-               string reason = StringFormat("Floor hit:%.2f Peak:%.2f Gap:%.2f", trailFloorValue, activePeak, gap);
-               LogSingleClose(ticket, posProfit, reason);
-               
-               CreateCloseLabelBeforeClose(ticket);
-               if(trade.PositionClose(ticket)) {
-                  string lineName = StringFormat("TrailFloor_%I64u", ticket);
-                  ObjectDelete(0, lineName);
-                  RemoveTrail(idx);
-               }
-            }
-         }
-      }
-   }
-   
-   // Cleanup stale trails (positions that no longer exist)
-   for(int j = ArraySize(g_trails) - 1; j >= 0; j--) {
-      if(!PositionSelectByTicket(g_trails[j].ticket)) {
-         string levelInfo = GetLevelInfoForTicket(g_trails[j].ticket);
-         Log(2, StringFormat("ST CLEANUP %s #%I64u (position closed)", levelInfo, g_trails[j].ticket));
-         RemoveTrail(j);
-      }
    }
 }

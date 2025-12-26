@@ -259,23 +259,59 @@ string GetNearbyOrdersText(int centerLevel, int maxDisplay) {
 
 //============================= CALCULATIONS =======================//
 double CalculateSingleThreshold() {
-   if(SingleProfitThreshold > 0) return SingleProfitThreshold;
+   // For PROFIT-based activation
+   if(SingleTrailActivation == SINGLE_ACTIVATION_PROFIT) {
+      if(SingleActivationValue > 0) return SingleActivationValue;
+      
+      // Auto-calculate from gap
+      double spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * _Point;
+      double gapDistance = 2.0 * g_adaptiveGap;
+      double priceMove = gapDistance - spread;
+      
+      double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+      double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+      if(tickSize == 0) tickSize = _Point;
+      
+      double profitPer01 = (priceMove / tickSize) * tickValue * 0.01;
+      if(profitPer01 < 0.01) profitPer01 = 0.01;
+      
+      Log(3, StringFormat("Auto-calc threshold: Gap=%.1f pts | Distance=%.1f | Spread=%.1f | Threshold=%.2f",
+          g_adaptiveGap/_Point, gapDistance/_Point, spread/_Point, profitPer01));
+      
+      return profitPer01;
+   }
    
-   double spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * _Point;
-   double gapDistance = 2.0 * g_adaptiveGap;
-   double priceMove = gapDistance - spread;
-   
-   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   if(tickSize == 0) tickSize = _Point;
-   
-   double profitPer01 = (priceMove / tickSize) * tickValue * 0.01;
-   if(profitPer01 < 0.01) profitPer01 = 0.01;
-   
-   Log(3, StringFormat("Auto-calc threshold: Gap=%.1f pts | Distance=%.1f | Spread=%.1f | Threshold=%.2f",
-       g_adaptiveGap/_Point, gapDistance/_Point, spread/_Point, profitPer01));
-   
-   return profitPer01;
+   // For LEVEL-based activation, return 0 (threshold not used in same way)
+   return 0.0;
+}
+
+double CalculateSingleTrailGap(double threshold, double profitPer01) {
+   switch(SingleTrailGapMethod) {
+      case SINGLE_GAP_FIXED:
+         // Use helper value as points
+         return SingleTrailGapValue * _Point;
+         
+      case SINGLE_GAP_PERCENTAGE:
+         // Use helper value as % of threshold
+         if(threshold > 0) {
+            return threshold * (SingleTrailGapValue / 100.0);
+         }
+         // Fallback if threshold is 0
+         return g_adaptiveGap * 0.5;
+         
+      case SINGLE_GAP_DYNAMIC:
+         // Calculate based on order profit and lot size
+         // Higher profit = wider gap
+         if(profitPer01 > 0 && threshold > 0) {
+            double ratio = profitPer01 / threshold;
+            return threshold * MathMin(0.5, ratio * 0.2); // 20% to 50% of threshold
+         }
+         // Fallback
+         return g_adaptiveGap * 0.5;
+         
+      default:
+         return g_adaptiveGap * 0.5;
+   }
 }
 
 double CalculateATR() {

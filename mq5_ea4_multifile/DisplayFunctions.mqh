@@ -620,49 +620,59 @@ void UpdateButtonStates() {
    string methodText = "";
    color methodColor = clrDarkSlateGray;
    
-   switch(g_currentTrailMethod) {
-      case SINGLE_TRAIL_NORMAL:
-         methodText = "Method: NORMAL";
+   // Show single trail activation status
+   string singleStatus = "";
+   switch(SingleTrailActivation) {
+      case SINGLE_ACTIVATION_IGNORE:  singleStatus = "OFF"; break;
+      case SINGLE_ACTIVATION_PROFIT:  singleStatus = "PROFIT"; break;
+      case SINGLE_ACTIVATION_LEVEL:   singleStatus = "LEVEL"; break;
+      default: singleStatus = "?"; break;
+   }
+   
+   // Show group trail method
+   switch(g_currentGroupTrailMethod) {
+      case GROUP_TRAIL_IGNORE:
+         methodText = StringFormat("S-%s G-OFF", singleStatus);
          methodColor = clrDarkSlateGray;
          break;
-      case SINGLE_TRAIL_CLOSETOGETHER:
-         methodText = "Method: ANYSIDE";
+      case GROUP_TRAIL_CLOSETOGETHER:
+         methodText = StringFormat("S-%s G-ANY", singleStatus);
          methodColor = clrDarkOliveGreen;
          break;
-      case SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE:
-         methodText = "Method: SAMETYPE";
+      case GROUP_TRAIL_CLOSETOGETHER_SAMETYPE:
+         methodText = StringFormat("S-%s G-SAME", singleStatus);
          methodColor = clrDarkCyan;
          break;
-      case SINGLE_TRAIL_DYNAMIC:
-         methodText = "Method: DYNAMIC";
+      case GROUP_TRAIL_DYNAMIC:
+         methodText = StringFormat("S-%s G-DYN", singleStatus);
          methodColor = clrDarkMagenta;
          break;
-      case SINGLE_TRAIL_DYNAMIC_SAMETYPE:
-         methodText = "Method: DYN-SAME";
+      case GROUP_TRAIL_DYNAMIC_SAMETYPE:
+         methodText = StringFormat("S-%s G-DYNS", singleStatus);
          methodColor = clrDarkViolet;
          break;
-      case SINGLE_TRAIL_DYNAMIC_ANYSIDE:
-         methodText = "Method: DYN-ANY";
+      case GROUP_TRAIL_DYNAMIC_ANYSIDE:
+         methodText = StringFormat("S-%s G-DYNA", singleStatus);
          methodColor = clrIndigo;
          break;
-      case SINGLE_TRAIL_HYBRID_BALANCED:
-         methodText = "Method: HYB-BAL";
+      case GROUP_TRAIL_HYBRID_BALANCED:
+         methodText = StringFormat("S-%s G-BAL", singleStatus);
          methodColor = clrDarkOrange;
          break;
-      case SINGLE_TRAIL_HYBRID_ADAPTIVE:
-         methodText = "Method: HYB-ADP";
+      case GROUP_TRAIL_HYBRID_ADAPTIVE:
+         methodText = StringFormat("S-%s G-ADP", singleStatus);
          methodColor = clrSaddleBrown;
          break;
-      case SINGLE_TRAIL_HYBRID_SMART:
-         methodText = "Method: HYB-SMART";
+      case GROUP_TRAIL_HYBRID_SMART:
+         methodText = StringFormat("S-%s G-SMT", singleStatus);
          methodColor = clrDarkGoldenrod;
          break;
-      case SINGLE_TRAIL_HYBRID_COUNT_DIFF:
-         methodText = "Method: HYB-CNT";
+      case GROUP_TRAIL_HYBRID_COUNT_DIFF:
+         methodText = StringFormat("S-%s G-CNT", singleStatus);
          methodColor = clrMaroon;
          break;
       default:
-         methodText = StringFormat("Method: %d", g_currentTrailMethod);
+         methodText = StringFormat("S-%s G-%d", singleStatus, g_currentGroupTrailMethod);
          methodColor = clrDarkGray;
          break;
    }
@@ -1710,15 +1720,15 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          }
       }
       
-      // Handle Trail Method selections
+      // Handle Trail Method selections (now for group trail method)
       if(StringFind(sparam, "SelectMethod_") >= 0) {
          int selectedMethod = (int)StringToInteger(StringSubstr(sparam, 13)); // Extract number from "SelectMethod_X"
-         g_currentTrailMethod = selectedMethod;
+         g_currentGroupTrailMethod = selectedMethod;
          DestroySelectionPanel();
          UpdateButtonStates();
          string methodName = "";
-         switch(g_currentTrailMethod) {
-            case 0: methodName = "NORMAL (independent trail)"; break;
+         switch(g_currentGroupTrailMethod) {
+            case 0: methodName = "IGNORE (no group trail)"; break;
             case 1: methodName = "CLOSETOGETHER (group any-side)"; break;
             case 2: methodName = "CLOSETOGETHER_SAMETYPE (group same-side)"; break;
             case 3: methodName = "DYNAMIC (GLO-based switch)"; break;
@@ -1729,7 +1739,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
             case 8: methodName = "HYBRID_SMART (multi-factor analysis)"; break;
             case 9: methodName = "HYBRID_COUNT_DIFF (order count difference based)"; break;
          }
-         Log(1, StringFormat("Trail Method changed to: %d (%s)", g_currentTrailMethod, methodName));
+         Log(1, StringFormat("Group Trail Method changed to: %d (%s)", g_currentGroupTrailMethod, methodName));
       }
       
       // Button 11: Toggle Order Labels

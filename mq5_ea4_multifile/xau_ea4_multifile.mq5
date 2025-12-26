@@ -18,8 +18,8 @@ int OnInit() {
    // Parse lot calculation priority sequence
    ParsePrioritySequence();
    
-   // Initialize trail method from input
-   g_currentTrailMethod = SingleTrailMethod;
+   // Initialize group trail method from input
+   g_currentGroupTrailMethod = GroupTrailMethod;
    
    // Initialize order labels from input
    g_showOrderLabels = ShowOrderLabels;

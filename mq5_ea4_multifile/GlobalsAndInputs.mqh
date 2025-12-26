@@ -77,21 +77,40 @@ input ENUM_NO_POSITIONS_ACTION NoPositionsAction = NO_POS_NEAREST_LEVEL; // Acti
 //==================== SINGLE TRAIL CLOSING ====================//
 input group "═══════════════ SINGLE TRAIL CLOSING ═══════════════"
 bool   EnableSingleTrailing = true; // Enable single position trailing
-input double SingleProfitThreshold = -1; // Profit per 0.01 lot to start trail (negative = auto-calc from gap)
 
-enum ENUM_SINGLE_TRAIL_METHOD {
-   SINGLE_TRAIL_NORMAL = 0,       // Normal - trail each order independently
-   SINGLE_TRAIL_CLOSETOGETHER = 1, // Close Together - trail worst loss with profitable orders (any side)
-   SINGLE_TRAIL_CLOSETOGETHER_SAMETYPE = 2, // Close Together Same Type - trail worst loss with profitable orders (same side only)
-   SINGLE_TRAIL_DYNAMIC = 3,      // Dynamic - switch between single and group trail based on GLO count (uses any side mode when group trailing)
-   SINGLE_TRAIL_DYNAMIC_SAMETYPE = 4, // Dynamic Same Type - switch based on GLO, use same-side mode when group trailing
-   SINGLE_TRAIL_DYNAMIC_ANYSIDE = 5,   // Dynamic Any Side - switch based on GLO, use any-side mode when group trailing
-   SINGLE_TRAIL_HYBRID_BALANCED = 6,   // Hybrid Balanced - switches based on net exposure imbalance
-   SINGLE_TRAIL_HYBRID_ADAPTIVE = 7,   // Hybrid Adaptive - switches based on GLO ratio and profit state
-   SINGLE_TRAIL_HYBRID_SMART = 8,      // Hybrid Smart - uses multiple factors (net exposure, GLO ratio, cycle profit)
-   SINGLE_TRAIL_HYBRID_COUNT_DIFF = 9  // Hybrid Count Diff - switches based on buy/sell order count difference
+// Single Trail Activation Method (when to start trailing individual orders)
+enum ENUM_SINGLE_TRAIL_ACTIVATION {
+   SINGLE_ACTIVATION_IGNORE = 0,      // Ignore - no single trail
+   SINGLE_ACTIVATION_PROFIT = 1,      // Profit Based - trail when profit per 0.01 lot reaches threshold
+   SINGLE_ACTIVATION_LEVEL = 2        // Level Based - trail when order is N levels in profit
 };
-input ENUM_SINGLE_TRAIL_METHOD SingleTrailMethod = SINGLE_TRAIL_NORMAL; // Single trail closing method
+input ENUM_SINGLE_TRAIL_ACTIVATION SingleTrailActivation = SINGLE_ACTIVATION_PROFIT; // When to start single trail
+input double SingleActivationValue = -1; // Activation helper: profit per 0.01 lot OR level count (negative = auto-calc from gap for profit)
+
+// Single Trail Gap Method (how much to trail)
+enum ENUM_SINGLE_TRAIL_GAP {
+   SINGLE_GAP_FIXED = 0,           // Fixed - use helper value as points
+   SINGLE_GAP_PERCENTAGE = 1,      // Percentage - use helper value as % of threshold (e.g., 50 = 50% of activation threshold)
+   SINGLE_GAP_DYNAMIC = 2          // Dynamic - calculate based on order profit and lot size
+};
+input ENUM_SINGLE_TRAIL_GAP SingleTrailGapMethod = SINGLE_GAP_PERCENTAGE; // Trail gap calculation method
+input double SingleTrailGapValue = 50.0; // Gap helper: points, percentage, or multiplier depending on method
+
+//==================== GROUP TRAIL CLOSING ====================//
+input group "═══════════════ GROUP TRAIL CLOSING ═══════════════"
+enum ENUM_GROUP_TRAIL_METHOD {
+   GROUP_TRAIL_IGNORE = 0,            // Ignore - no group trail
+   GROUP_TRAIL_CLOSETOGETHER = 1,     // Close Together - trail worst loss with profitable orders (any side)
+   GROUP_TRAIL_CLOSETOGETHER_SAMETYPE = 2, // Close Together Same Type - trail worst loss with profitable orders (same side only)
+   GROUP_TRAIL_DYNAMIC = 3,           // Dynamic - switch between single and group trail based on GLO count (uses any side mode when group trailing)
+   GROUP_TRAIL_DYNAMIC_SAMETYPE = 4,  // Dynamic Same Type - switch based on GLO, use same-side mode when group trailing
+   GROUP_TRAIL_DYNAMIC_ANYSIDE = 5,   // Dynamic Any Side - switch based on GLO, use any-side mode when group trailing
+   GROUP_TRAIL_HYBRID_BALANCED = 6,   // Hybrid Balanced - switches based on net exposure imbalance
+   GROUP_TRAIL_HYBRID_ADAPTIVE = 7,   // Hybrid Adaptive - switches based on GLO ratio and profit state
+   GROUP_TRAIL_HYBRID_SMART = 8,      // Hybrid Smart - uses multiple factors (net exposure, GLO ratio, cycle profit)
+   GROUP_TRAIL_HYBRID_COUNT_DIFF = 9  // Hybrid Count Diff - switches based on buy/sell order count difference
+};
+input ENUM_GROUP_TRAIL_METHOD GroupTrailMethod = GROUP_TRAIL_IGNORE; // Group trail closing method
 input int MinGLOForGroupTrail = 10; // Minimum GLO orders to activate group trailing
 input int DynamicGLOThreshold = 5; // GLO threshold for dynamic method (< threshold = single trail, >= threshold = group trail)
 input double MinGroupProfitToClose = 0.0; // Minimum combined profit to close group (prevents closing at loss)
@@ -249,7 +268,7 @@ bool g_showOrderLabels = false;  // If true: show order open/close labels on cha
 int  g_currentDebugLevel = 0;    // Current debug level (modifiable at runtime, initialized from DebugLevel input)
 int  g_singleTrailMode = 2;      // Single trail sensitivity: 0=Tight, 1=Normal, 2=Loose
 int  g_totalTrailMode = 2;       // Total trail sensitivity: 0=Tight, 1=Normal, 2=Loose
-int  g_currentTrailMethod = 9;   // Current trail method (modifiable at runtime, initialized from SingleTrailMethod input)
+int  g_currentGroupTrailMethod = 0;   // Current group trail method (modifiable at runtime, initialized from GroupTrailMethod input)
 int  g_historyDisplayMode = 2;   // History display mode: 0=Overall, 1=CurSymAllMagic, 2=CurSymCurMagic, 3=PerSymbol
 string g_activeSelectionPanel = ""; // Track active selection panel (empty = none active)
 
