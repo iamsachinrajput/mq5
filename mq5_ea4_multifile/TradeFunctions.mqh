@@ -329,24 +329,24 @@ bool HasOrderNearLevel(int orderType, int level, double gap, int window) {
    return false;
 }
 
-// Check if order is a boundary order (topmost BUY or bottommost SELL)
+// Check if order is a boundary order
+// BUY boundary: No orders ABOVE it (don't check below)
+// SELL boundary: No orders BELOW it (don't check above)
 bool IsBoundaryOrder(int orderType, int level, double gap) {
    if(orderType == POSITION_TYPE_BUY) {
-      // Check if there are any BUY orders above this level
+      // BUY boundary: Check if any orders exist ABOVE this level
       for(int i = 0; i < g_orderCount; i++) {
          if(!g_orders[i].isValid) continue;
-         if(g_orders[i].type != POSITION_TYPE_BUY) continue;
-         if(g_orders[i].level > level) return false;
+         if(g_orders[i].level > level) return false; // Found order above
       }
-      return true; // No BUY above, this is topmost BUY
+      return true; // No orders above - this is BUY boundary
    } else {
-      // Check if there are any SELL orders below this level
+      // SELL boundary: Check if any orders exist BELOW this level
       for(int i = 0; i < g_orderCount; i++) {
          if(!g_orders[i].isValid) continue;
-         if(g_orders[i].type != POSITION_TYPE_SELL) continue;
-         if(g_orders[i].level < level) return false;
+         if(g_orders[i].level < level) return false; // Found order below
       }
-      return true; // No SELL below, this is bottommost SELL
+      return true; // No orders below - this is SELL boundary
    }
 }
 
