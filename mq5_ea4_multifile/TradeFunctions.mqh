@@ -343,13 +343,13 @@ bool IsOrderPlacementAllowed(int orderType, int level, double gap) {
       return true;
    }
    
-   // Boundary Check Directional Strategy:
-   // BUY at level L (even) - needs SELL order below it (any odd level < L)
-   // SELL at level L (odd) - needs BUY order above it (any even level > L)
+   // Boundary Check Directional Strategy (Waiting for Direction Change):
+   // BUY at level L - needs N SELL orders below it (SELL level < BUY level)
+   // SELL at level L - needs N BUY orders above it (BUY level > SELL level)
+   // Where N = BoundaryDirectionalCount input parameter
    if(OrderPlacementStrategy == ORDER_STRATEGY_BOUNDARY_DIRECTIONAL) {
       string typeStr = (orderType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
       
-      bool hasOpposingOrder = false;
       int opposingCount = 0;
       
       // Use tracking array for authentic levels from comments
@@ -362,30 +362,28 @@ bool IsOrderPlacementAllowed(int orderType, int level, double gap) {
          if(orderType == POSITION_TYPE_BUY) {
             // BUY order - need SELL below (SELL level < BUY level)
             if(type == POSITION_TYPE_SELL && existingLevel < level) {
-               hasOpposingOrder = true;
                opposingCount++;
             }
          } else {
             // SELL order - need BUY above (BUY level > SELL level)
             if(type == POSITION_TYPE_BUY && existingLevel > level) {
-               hasOpposingOrder = true;
                opposingCount++;
             }
          }
       }
       
-      if(!hasOpposingOrder) {
+      if(opposingCount < BoundaryDirectionalCount) {
          string direction = (orderType == POSITION_TYPE_BUY) ? "below" : "above";
          string opposingType = (orderType == POSITION_TYPE_BUY) ? "SELL" : "BUY";
          // Get nearby orders for context
          string nearbyOrders = GetNearbyOrdersText(level, 5);
-         Log(2, StringFormat("[STRATEGY-BLOCKED] %s L%d | No %s order %s - boundary check failed | Nearby: %s",
-             typeStr, level, opposingType, direction, nearbyOrders));
+         Log(2, StringFormat("[STRATEGY-BLOCKED] %s L%d | Need %d %s orders %s, found %d | Nearby: %s",
+             typeStr, level, BoundaryDirectionalCount, opposingType, direction, opposingCount, nearbyOrders));
          return false;
       }
       
-      Log(3, StringFormat("[STRATEGY-PASSED] %s L%d | Found %d opposing orders - boundary check passed",
-          typeStr, level, opposingCount));
+      Log(3, StringFormat("[STRATEGY-PASSED] %s L%d | Found %d/%d opposing orders - direction change detected",
+          typeStr, level, opposingCount, BoundaryDirectionalCount));
       return true;
    }
    

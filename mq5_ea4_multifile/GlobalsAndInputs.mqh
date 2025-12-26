@@ -66,10 +66,11 @@ input ENUM_TRAIL_LOT_MODE TrailLotMode = TRAIL_LOT_BASE;  // Lot size calculatio
 
 enum ENUM_ORDER_STRATEGY {
    ORDER_STRATEGY_NONE = 0,                // No checks - always allow orders
-   ORDER_STRATEGY_BOUNDARY_DIRECTIONAL = 1, // BUY needs any SELL below, SELL needs any BUY above
+   ORDER_STRATEGY_BOUNDARY_DIRECTIONAL = 1, // Wait for direction change - BUY needs N SELLs below, SELL needs N BUYs above
    ORDER_STRATEGY_FAR_ADJACENT = 2         // Flexible adjacent check (Distance=start point, Depth=how many levels)
 };
 input ENUM_ORDER_STRATEGY OrderPlacementStrategy = ORDER_STRATEGY_FAR_ADJACENT; // Order placement strategy
+input int BoundaryDirectionalCount = 5;  // Number of opposite orders required for BOUNDARY_DIRECTIONAL (waiting for direction change)
 input int FarAdjacentDistance = 3;       // Starting distance for FAR_ADJACENT (1=adjacent, 3=skip 1 level, 5=skip 2 levels)
 input int FarAdjacentDepth = 5;          // Number of opposite-type levels to check from starting distance (1=strict, higher=flexible)
 
