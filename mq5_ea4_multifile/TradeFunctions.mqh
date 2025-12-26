@@ -2287,8 +2287,9 @@ void ProcessSingleTrail() {
                Log(1, StringFormat("ST CLOSE #%I64u: PPL=%.2f <= Floor=%.2f | Peak=%.2f Gap=%.2f",
                    ticket, profitPer01, trailFloor, activePeak, gap));
                
+               CreateCloseLabelBeforeClose(ticket);
                if(trade.PositionClose(ticket)) {
-                  RemoveTrail(ticket);
+                  RemoveTrail(trailIdx);
                   string typeStr = (g_orders[i].type == ORDER_TYPE_BUY) ? "BUY" : "SELL";
                   LogTradeAction("SingleTrailClose", typeStr, ticket, lots, 0, profit);
                }
