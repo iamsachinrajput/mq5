@@ -125,10 +125,16 @@ input int    HybridCountDiffThreshold = 5;  // Order count difference threshold 
 //==================== TOTAL TRAIL CLOSING ====================//
 input group "═══════════════ TOTAL TRAIL CLOSING ═══════════════"
 bool   EnableTotalTrailing = true;  // Enable total profit trailing
-double TrailStartPct = 0.10;        // Start trail at % of max loss (0.10 = 10%)
-double TrailProfitPct = 0.85;       // Start trail at % of max profit (0.85 = 85%)
-double TrailGapPct = 0.50;          // Trail gap as % of start value (0.50 = 50%)
-double MaxTrailGap = 2500.0;         // Maximum trail gap (absolute cap)
+
+// --- Total Trail Start Triggers ---
+input group "--- TOTAL TRAIL START TRIGGERS ---"
+input double TrailStartPct = 0.10;   // Start trail at % of max loss (0.10 = 10%)
+input double TrailProfitPct = 0.85;  // Start trail at % of max profit touched (0.85 = 85%)
+
+// --- Total Trail Gap ---
+input group "--- TOTAL TRAIL GAP ---"
+input double TrailGapPct = 0.50;     // Trail gap as % of start value (0.50 = 50%)
+input double MaxTrailGap = 2500.0;   // Maximum trail gap (absolute cap)
 
 enum ENUM_TRAIL_ORDER_MODE {
    TRAIL_ORDERS_NONE = 0,           // No new orders during trail
