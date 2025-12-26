@@ -2135,7 +2135,18 @@ void UpdateCurrentProfitVline() {
       
       // Line 1: Cycle Profit (centered)
       if(g_showCenterCycleLabel) {
-         string cycleText = StringFormat("P%.0f", cycleProfit);
+         // Calculate trail start for display
+         double lossStart = g_maxLossCycle * TrailStartPct;
+         double profitStart = g_maxProfitCycle * TrailProfitPct;
+         double trailStart = MathMax(lossStart, profitStart);
+         
+         // Format: P{cycleProfit}/{trailStart}/{floorPrice}
+         string cycleText;
+         if(g_trailActive) {
+            cycleText = StringFormat("P%.0f/%.0f/%.0f", cycleProfit, trailStart, g_trailFloor);
+         } else {
+            cycleText = StringFormat("P%.0f/%.0f", cycleProfit, trailStart);
+         }
          color cycleColor = (cycleProfit >= 0) ? clrLime : clrRed;
          
          string centerName = "CenterCycleLabel";
