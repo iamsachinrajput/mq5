@@ -284,6 +284,7 @@ bool g_showInfoLabels = true;    // Show/hide info panel labels (left side)
 bool g_showOrderLabelsCtrl = true; // Show/hide order labels on chart
 bool g_showVLines = true;        // Show/hide vertical lines
 bool g_showHLines = true;        // Show/hide horizontal lines
+bool g_showLabelLines = true;    // Show/hide label lines (new control)
 
 // Individual label visibility controls
 bool g_showCurrentProfitLabel = true;
