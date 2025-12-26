@@ -189,8 +189,8 @@ void CreateButtons() {
       ObjectSetInteger(0, btn12Name, OBJPROP_HIDDEN, false);
    }
    
-   // Button 5: Toggle Labels (SHOW)
-   string btn4Name = "BtnToggleLabels";
+   // Button 5: Lines Control (SHOW) - Opens panel for VLines, HLines, Next Lines, Order Labels
+   string btn4Name = "BtnLinesControl";
    if(ObjectFind(0, btn4Name) < 0) {
       ObjectCreate(0, btn4Name, OBJ_BUTTON, 0, 0, 0);
       ObjectSetInteger(0, btn4Name, OBJPROP_XDISTANCE, rightMargin);
@@ -204,37 +204,37 @@ void CreateButtons() {
       ObjectSetInteger(0, btn4Name, OBJPROP_HIDDEN, false);
    }
    
-   // Button 6: Toggle Next Level Lines (SHOW)
-   string btn5Name = "BtnToggleNextLines";
-   if(ObjectFind(0, btn5Name) < 0) {
-      ObjectCreate(0, btn5Name, OBJ_BUTTON, 0, 0, 0);
-      ObjectSetInteger(0, btn5Name, OBJPROP_XDISTANCE, rightMargin);
-      ObjectSetInteger(0, btn5Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 5);
-      ObjectSetInteger(0, btn5Name, OBJPROP_XSIZE, buttonWidth);
-      ObjectSetInteger(0, btn5Name, OBJPROP_YSIZE, buttonHeight);
-      ObjectSetInteger(0, btn5Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
-      ObjectSetInteger(0, btn5Name, OBJPROP_FONTSIZE, 8);
-      ObjectSetString(0, btn5Name, OBJPROP_FONT, "Arial Bold");
-      ObjectSetInteger(0, btn5Name, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, btn5Name, OBJPROP_HIDDEN, false);
-   }
-   
-   // Button 7: Toggle Order Labels (SHOW)
-   string btn11Name = "BtnOrderLabels";
+   // Button 6: Toggle Labels (Info Labels)
+   string btn11Name = "BtnToggleLabels";
    if(ObjectFind(0, btn11Name) < 0) {
       ObjectCreate(0, btn11Name, OBJ_BUTTON, 0, 0, 0);
       ObjectSetInteger(0, btn11Name, OBJPROP_XDISTANCE, rightMargin);
-      ObjectSetInteger(0, btn11Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 6);
+      ObjectSetInteger(0, btn11Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 5);
       ObjectSetInteger(0, btn11Name, OBJPROP_XSIZE, buttonWidth);
       ObjectSetInteger(0, btn11Name, OBJPROP_YSIZE, buttonHeight);
       ObjectSetInteger(0, btn11Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
-      ObjectSetString(0, btn11Name, OBJPROP_TEXT, "Order Labels: ON");
       ObjectSetInteger(0, btn11Name, OBJPROP_FONTSIZE, 8);
       ObjectSetString(0, btn11Name, OBJPROP_FONT, "Arial Bold");
-      ObjectSetInteger(0, btn11Name, OBJPROP_BGCOLOR, clrDarkGreen);
-      ObjectSetInteger(0, btn11Name, OBJPROP_COLOR, clrWhite);
       ObjectSetInteger(0, btn11Name, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, btn11Name, OBJPROP_HIDDEN, false);
+   }
+   
+   // Button 7: Print Stats (shifted up from position 6)
+   string btn6Name = "BtnPrintStats";
+   if(ObjectFind(0, btn6Name) < 0) {
+      ObjectCreate(0, btn6Name, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, btn6Name, OBJPROP_XDISTANCE, rightMargin);
+      ObjectSetInteger(0, btn6Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 6);
+      ObjectSetInteger(0, btn6Name, OBJPROP_XSIZE, buttonWidth);
+      ObjectSetInteger(0, btn6Name, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetInteger(0, btn6Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetString(0, btn6Name, OBJPROP_TEXT, "Print Stats");
+      ObjectSetInteger(0, btn6Name, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, btn6Name, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, btn6Name, OBJPROP_BGCOLOR, clrDarkBlue);
+      ObjectSetInteger(0, btn6Name, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btn6Name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, btn6Name, OBJPROP_HIDDEN, false);
    }
    
    // Button 8: Trail Method Strategy (TRAIL)
@@ -346,22 +346,22 @@ void CreateButtons() {
       ObjectSetInteger(0, btn14Name, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
    }
    
-   // Button 15: Print Stats (LESS CRITICAL)
-   string btn6Name = "BtnPrintStats";
-   if(ObjectFind(0, btn6Name) < 0) {
-      ObjectCreate(0, btn6Name, OBJ_BUTTON, 0, 0, 0);
-      ObjectSetInteger(0, btn6Name, OBJPROP_XDISTANCE, rightMargin);
-      ObjectSetInteger(0, btn6Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 15);
-      ObjectSetInteger(0, btn6Name, OBJPROP_XSIZE, buttonWidth);
-      ObjectSetInteger(0, btn6Name, OBJPROP_YSIZE, buttonHeight);
-      ObjectSetInteger(0, btn6Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
-      ObjectSetString(0, btn6Name, OBJPROP_TEXT, "Print Stats");
-      ObjectSetInteger(0, btn6Name, OBJPROP_FONTSIZE, 8);
-      ObjectSetString(0, btn6Name, OBJPROP_FONT, "Arial Bold");
-      ObjectSetInteger(0, btn6Name, OBJPROP_BGCOLOR, clrDarkBlue);
-      ObjectSetInteger(0, btn6Name, OBJPROP_COLOR, clrWhite);
-      ObjectSetInteger(0, btn6Name, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, btn6Name, OBJPROP_HIDDEN, false);
+   // Button 15: Print Stats (LESS CRITICAL) - Duplicate removed, use position 7 instead
+   string btn15Name = "BtnPrintStats";
+   if(ObjectFind(0, btn15Name) < 0) {
+      ObjectCreate(0, btn15Name, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, btn15Name, OBJPROP_XDISTANCE, rightMargin);
+      ObjectSetInteger(0, btn15Name, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 15);
+      ObjectSetInteger(0, btn15Name, OBJPROP_XSIZE, buttonWidth);
+      ObjectSetInteger(0, btn15Name, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetInteger(0, btn15Name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetString(0, btn15Name, OBJPROP_TEXT, "Print Stats");
+      ObjectSetInteger(0, btn15Name, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, btn15Name, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, btn15Name, OBJPROP_BGCOLOR, clrDarkBlue);
+      ObjectSetInteger(0, btn15Name, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btn15Name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, btn15Name, OBJPROP_HIDDEN, false);
    }
    
    // Button 14: History Display Mode
@@ -465,32 +465,40 @@ void UpdateButtonStates() {
    ObjectSetInteger(0, btn3Name, OBJPROP_COLOR, clrWhite);
    ObjectSetInteger(0, btn3Name, OBJPROP_STATE, false);
    
-   // Update Button 4: Toggle Labels
-   string btn4Name = "BtnToggleLabels";
-   if(g_showLabels) {
-      ObjectSetString(0, btn4Name, OBJPROP_TEXT, "Labels [ON]");
-      ObjectSetInteger(0, btn4Name, OBJPROP_BGCOLOR, clrGreen);
-      ObjectSetInteger(0, btn4Name, OBJPROP_COLOR, clrWhite);
-      ObjectSetInteger(0, btn4Name, OBJPROP_STATE, true);
-   } else {
-      ObjectSetString(0, btn4Name, OBJPROP_TEXT, "Show Labels");
-      ObjectSetInteger(0, btn4Name, OBJPROP_BGCOLOR, clrDarkGray);
-      ObjectSetInteger(0, btn4Name, OBJPROP_COLOR, clrWhite);
-      ObjectSetInteger(0, btn4Name, OBJPROP_STATE, false);
-   }
+   // Update Button 4: Lines Control - Shows panel for line types
+   string btn4Name = "BtnLinesControl";
+   // Count how many line types are visible
+   int lineCount = 0;
+   if(g_showVLines) lineCount++;
+   if(g_showHLines) lineCount++;
+   if(g_showNextLevelLines) lineCount++;
+   if(g_showOrderLabelsCtrl) lineCount++;
    
-   // Update Button 5: Toggle Next Level Lines
-   string btn5Name = "BtnToggleNextLines";
-   if(g_showNextLevelLines) {
-      ObjectSetString(0, btn5Name, OBJPROP_TEXT, "Next Lines [ON]");
-      ObjectSetInteger(0, btn5Name, OBJPROP_BGCOLOR, clrBlue);
-      ObjectSetInteger(0, btn5Name, OBJPROP_COLOR, clrWhite);
-      ObjectSetInteger(0, btn5Name, OBJPROP_STATE, true);
+   if(lineCount == 4) {
+      ObjectSetString(0, btn4Name, OBJPROP_TEXT, "Lines [ALL ON]");
+      ObjectSetInteger(0, btn4Name, OBJPROP_BGCOLOR, clrDarkGreen);
+   } else if(lineCount == 0) {
+      ObjectSetString(0, btn4Name, OBJPROP_TEXT, "Lines Control");
+      ObjectSetInteger(0, btn4Name, OBJPROP_BGCOLOR, clrDarkGray);
    } else {
-      ObjectSetString(0, btn5Name, OBJPROP_TEXT, "Show Next Lines");
-      ObjectSetInteger(0, btn5Name, OBJPROP_BGCOLOR, clrDarkGray);
-      ObjectSetInteger(0, btn5Name, OBJPROP_COLOR, clrWhite);
-      ObjectSetInteger(0, btn5Name, OBJPROP_STATE, false);
+      ObjectSetString(0, btn4Name, OBJPROP_TEXT, StringFormat("Lines [%d/4]", lineCount));
+      ObjectSetInteger(0, btn4Name, OBJPROP_BGCOLOR, clrDarkOrange);
+   }
+   ObjectSetInteger(0, btn4Name, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, btn4Name, OBJPROP_STATE, false);
+   
+   // Update Button 5: Toggle Labels (Info Labels)
+   string btn11Name = "BtnToggleLabels";
+   if(g_showLabels) {
+      ObjectSetString(0, btn11Name, OBJPROP_TEXT, "Labels [ON]");
+      ObjectSetInteger(0, btn11Name, OBJPROP_BGCOLOR, clrGreen);
+      ObjectSetInteger(0, btn11Name, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btn11Name, OBJPROP_STATE, true);
+   } else {
+      ObjectSetString(0, btn11Name, OBJPROP_TEXT, "Show Labels");
+      ObjectSetInteger(0, btn11Name, OBJPROP_BGCOLOR, clrDarkGray);
+      ObjectSetInteger(0, btn11Name, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btn11Name, OBJPROP_STATE, false);
    }
    
    // Update Button 6: Print Stats (always same appearance)
@@ -682,17 +690,17 @@ void UpdateButtonStates() {
    ObjectSetInteger(0, btn10Name, OBJPROP_COLOR, clrWhite);
    ObjectSetInteger(0, btn10Name, OBJPROP_STATE, false);
    
-   // Update Button 11: Order Labels
-   string btn11Name = "BtnOrderLabels";
+   // Update Button 11: Order Labels (deprecated - now in Lines Control)
+   string btnOldOrderLabels = "BtnOrderLabels";
    if(g_showOrderLabels) {
-      ObjectSetString(0, btn11Name, OBJPROP_TEXT, "Order Labels: ON");
-      ObjectSetInteger(0, btn11Name, OBJPROP_BGCOLOR, clrDarkGreen);
+      ObjectSetString(0, btnOldOrderLabels, OBJPROP_TEXT, "Order Labels: ON");
+      ObjectSetInteger(0, btnOldOrderLabels, OBJPROP_BGCOLOR, clrDarkGreen);
    } else {
-      ObjectSetString(0, btn11Name, OBJPROP_TEXT, "Order Labels: OFF");
-      ObjectSetInteger(0, btn11Name, OBJPROP_BGCOLOR, clrDarkGray);
+      ObjectSetString(0, btnOldOrderLabels, OBJPROP_TEXT, "Order Labels: OFF");
+      ObjectSetInteger(0, btnOldOrderLabels, OBJPROP_BGCOLOR, clrDarkGray);
    }
-   ObjectSetInteger(0, btn11Name, OBJPROP_COLOR, clrWhite);
-   ObjectSetInteger(0, btn11Name, OBJPROP_STATE, false);
+   ObjectSetInteger(0, btnOldOrderLabels, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, btnOldOrderLabels, OBJPROP_STATE, false);
    
    // Update Button 12: Reset Counters (always same appearance)
    string btn12Name = "BtnResetCounters";
@@ -972,6 +980,54 @@ void CreateSelectionPanel(string panelType) {
       }
    }
    
+   // Lines Control Panel - Individual line type show/hide
+   else if(panelType == "LinesControl") {
+      g_activeSelectionPanel = "LinesControl";
+      
+      string lineTexts[] = {"VLines", "HLines", "Next Lines", "Order Labels"};
+      bool lineStates[] = {g_showVLines, g_showHLines, g_showNextLevelLines, g_showOrderLabelsCtrl};
+      
+      int lineCount = 4;
+      // Panel height: 1 ALL button + 4 line type buttons + padding
+      ObjectSetInteger(0, bgName, OBJPROP_YSIZE, (lineCount + 1) * (buttonHeight + 5) + 20);
+      
+      // Create ALL button at the top
+      string btnAllName = "SelectLine_ALL";
+      bool allVisible = g_showVLines && g_showHLines && g_showNextLevelLines && g_showOrderLabelsCtrl;
+      
+      ObjectCreate(0, btnAllName, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, btnAllName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetInteger(0, btnAllName, OBJPROP_XDISTANCE, rightMargin + buttonWidth + 20);
+      ObjectSetInteger(0, btnAllName, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 4 + yOffset);
+      ObjectSetInteger(0, btnAllName, OBJPROP_XSIZE, 160);
+      ObjectSetInteger(0, btnAllName, OBJPROP_YSIZE, buttonHeight);
+      ObjectSetString(0, btnAllName, OBJPROP_TEXT, allVisible ? "✓ ALL" : "✗ ALL");
+      ObjectSetInteger(0, btnAllName, OBJPROP_BGCOLOR, allVisible ? clrDarkGreen : clrDarkRed);
+      ObjectSetInteger(0, btnAllName, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, btnAllName, OBJPROP_FONTSIZE, 10);
+      ObjectSetInteger(0, btnAllName, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, btnAllName, OBJPROP_HIDDEN, true);
+      yOffset += buttonHeight + 5;
+      
+      for(int i = 0; i < lineCount; i++) {
+         string btnName = StringFormat("SelectLine_%d", i);
+         ObjectCreate(0, btnName, OBJ_BUTTON, 0, 0, 0);
+         ObjectSetInteger(0, btnName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+         ObjectSetInteger(0, btnName, OBJPROP_XDISTANCE, rightMargin + buttonWidth + 20);
+         ObjectSetInteger(0, btnName, OBJPROP_YDISTANCE, topMargin + (buttonHeight + verticalGap) * 4 + yOffset);
+         ObjectSetInteger(0, btnName, OBJPROP_XSIZE, 160);
+         ObjectSetInteger(0, btnName, OBJPROP_YSIZE, buttonHeight);
+         string btnText = lineStates[i] ? ("✓ " + lineTexts[i]) : ("✗ " + lineTexts[i]);
+         ObjectSetString(0, btnName, OBJPROP_TEXT, btnText);
+         ObjectSetInteger(0, btnName, OBJPROP_BGCOLOR, lineStates[i] ? clrDarkGreen : clrDarkRed);
+         ObjectSetInteger(0, btnName, OBJPROP_COLOR, clrWhite);
+         ObjectSetInteger(0, btnName, OBJPROP_FONTSIZE, 10);
+         ObjectSetInteger(0, btnName, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, btnName, OBJPROP_HIDDEN, true);
+         yOffset += buttonHeight + 5;
+      }
+   }
+   
    // Unified Visibility Controls Panel (only Buttons show/hide)
    else if(panelType == "VisibilityControls") {
       g_activeSelectionPanel = "VisibilityControls";
@@ -1082,8 +1138,8 @@ void ApplyVisibilitySettings() {
    // Apply main button visibility
    string mainButtons[] = {
       "BtnStopNewOrders", "BtnNoWork", "BtnCloseAll", "BtnResetCounters",
-      "BtnCloseProfit", "BtnSingleTrail", "BtnTotalTrail", "BtnToggleLabels", 
-      "BtnOrderLabels", "BtnToggleNextLines", "BtnTrailMethod", "BtnHistoryMode", 
+      "BtnCloseProfit", "BtnSingleTrail", "BtnTotalTrail", "BtnLinesControl", 
+      "BtnToggleLabels", "BtnTrailMethod", "BtnHistoryMode", 
       "BtnDebugLevel", "BtnPrintStats", "BtnToggleVLines", "BtnToggleHLines", "BtnTradeLogging", "BtnLevelLines"
    };
    
@@ -1376,7 +1432,16 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          }
       }
       
-      // Button 4: Toggle Labels - Show selection panel for individual label control
+      // Button 5: Lines Control - Show selection panel for line types
+      if(sparam == "BtnLinesControl") {
+         if(g_activeSelectionPanel == "LinesControl") {
+            DestroySelectionPanel();
+         } else {
+            CreateSelectionPanel("LinesControl");
+         }
+      }
+      
+      // Button 6: Toggle Labels - Show selection panel for individual label control
       if(sparam == "BtnToggleLabels") {
          if(g_activeSelectionPanel == "LabelControl") {
             DestroySelectionPanel();
@@ -1385,24 +1450,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          }
       }
       
-      // Button 5: Toggle Next Level Lines
-      if(sparam == "BtnToggleNextLines") {
-         g_showNextLevelLines = !g_showNextLevelLines;
-         g_showLevelLines = g_showNextLevelLines;  // Sync level lines with next lines
-         
-         if(!g_showNextLevelLines) {
-            // Lines will be deleted in UpdateNextLevelLines() on next call
-            RemoveLevelLines();  // Also remove level lines
-            Log(1, "Next Level Lines: DISABLED (calculations stopped)");
-         } else {
-            DrawLevelLines();  // Also draw level lines
-            Log(1, "Next Level Lines: ENABLED (will show next available order levels + level lines)");
-         }
-         
-         UpdateButtonStates();
-      }
-      
-      // Button 6: Print Stats
+      // Button 7: Print Stats
       if(sparam == "BtnPrintStats") {
          PrintCurrentStats();
          Log(1, "Stats printed to log");
@@ -1532,6 +1580,95 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
             case 3: modeName = "Per-Symbol Breakdown"; break;
          }
          Log(2, StringFormat("History Display Mode changed to: %d (%s)", g_historyDisplayMode, modeName));
+      }
+      
+      // Handle Label Control selections
+      // Handle Lines Control selections
+      // Handle ALL lines toggle
+      if(sparam == "SelectLine_ALL") {
+         bool allVisible = g_showVLines && g_showHLines && g_showNextLevelLines && g_showOrderLabelsCtrl;
+         
+         // Toggle all lines to opposite of current state
+         bool newState = !allVisible;
+         g_showVLines = newState;
+         g_showHLines = newState;
+         g_showNextLevelLines = newState;
+         g_showLevelLines = newState;  // Sync level lines with next lines
+         g_showOrderLabelsCtrl = newState;
+         
+         // Apply visibility changes
+         if(!g_showNextLevelLines) {
+            RemoveLevelLines();
+         } else {
+            DrawLevelLines();
+         }
+         ApplyVisibilitySettings();
+         
+         // Update ALL button appearance
+         ObjectSetInteger(0, "SelectLine_ALL", OBJPROP_BGCOLOR, newState ? clrDarkGreen : clrDarkRed);
+         ObjectSetString(0, "SelectLine_ALL", OBJPROP_TEXT, newState ? "✓ ALL" : "✗ ALL");
+         
+         // Update all individual line buttons
+         string lineNames[] = {"VLines", "HLines", "Next Lines", "Order Labels"};
+         for(int i = 0; i < 4; i++) {
+            string btnName = StringFormat("SelectLine_%d", i);
+            ObjectSetInteger(0, btnName, OBJPROP_BGCOLOR, newState ? clrDarkGreen : clrDarkRed);
+            ObjectSetString(0, btnName, OBJPROP_TEXT, newState ? ("✓ " + lineNames[i]) : ("✗ " + lineNames[i]));
+         }
+         
+         Log(2, StringFormat("All lines toggled: %s", newState ? "VISIBLE" : "HIDDEN"));
+      }
+      
+      if(StringFind(sparam, "SelectLine_") >= 0 && sparam != "SelectLine_ALL") {
+         int selectedLine = (int)StringToInteger(StringSubstr(sparam, 11));
+         
+         // Toggle the selected line type
+         switch(selectedLine) {
+            case 0: // VLines
+               g_showVLines = !g_showVLines;
+               ApplyVisibilitySettings();
+               Log(1, StringFormat("VLines: %s", g_showVLines ? "VISIBLE" : "HIDDEN"));
+               break;
+            case 1: // HLines
+               g_showHLines = !g_showHLines;
+               ApplyVisibilitySettings();
+               Log(1, StringFormat("HLines: %s", g_showHLines ? "VISIBLE" : "HIDDEN"));
+               break;
+            case 2: // Next Lines
+               g_showNextLevelLines = !g_showNextLevelLines;
+               g_showLevelLines = g_showNextLevelLines;  // Sync level lines
+               if(!g_showNextLevelLines) {
+                  RemoveLevelLines();
+               } else {
+                  DrawLevelLines();
+               }
+               Log(1, StringFormat("Next Lines: %s", g_showNextLevelLines ? "VISIBLE" : "HIDDEN"));
+               break;
+            case 3: // Order Labels
+               g_showOrderLabelsCtrl = !g_showOrderLabelsCtrl;
+               if(!g_showOrderLabelsCtrl) {
+                  HideAllOrderLabels();
+               } else {
+                  ShowAllOrderLabels();
+               }
+               Log(1, StringFormat("Order Labels: %s", g_showOrderLabelsCtrl ? "VISIBLE" : "HIDDEN"));
+               break;
+         }
+         
+         // Update button appearance
+         string btnName = StringFormat("SelectLine_%d", selectedLine);
+         bool isVisible = false;
+         string lineNames[] = {"VLines", "HLines", "Next Lines", "Order Labels"};
+         
+         switch(selectedLine) {
+            case 0: isVisible = g_showVLines; break;
+            case 1: isVisible = g_showHLines; break;
+            case 2: isVisible = g_showNextLevelLines; break;
+            case 3: isVisible = g_showOrderLabelsCtrl; break;
+         }
+         
+         ObjectSetInteger(0, btnName, OBJPROP_BGCOLOR, isVisible ? clrDarkGreen : clrDarkRed);
+         ObjectSetString(0, btnName, OBJPROP_TEXT, isVisible ? ("✓ " + lineNames[selectedLine]) : ("✗ " + lineNames[selectedLine]));
       }
       
       // Handle Label Control selections
