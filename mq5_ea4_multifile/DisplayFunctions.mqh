@@ -25,9 +25,8 @@ void DrawLevelLines() {
       ObjectSetDouble(0, lineName, OBJPROP_PRICE, levelPrice);
       
       // Set line properties
-      color lineColor = clrWhite;
       int lineWidth = (i == 0) ? 2 : 1;
-      ObjectSetInteger(0, lineName, OBJPROP_COLOR, lineColor);
+      ObjectSetInteger(0, lineName, OBJPROP_COLOR, LevelLineColor);
       ObjectSetInteger(0, lineName, OBJPROP_WIDTH, lineWidth);
       ObjectSetInteger(0, lineName, OBJPROP_STYLE, STYLE_DOT);
       ObjectSetInteger(0, lineName, OBJPROP_BACK, true);
@@ -43,8 +42,8 @@ void DrawLevelLines() {
       ObjectSetInteger(0, labelName, OBJPROP_TIME, TimeCurrent());
       ObjectSetDouble(0, labelName, OBJPROP_PRICE, levelPrice);
       ObjectSetString(0, labelName, OBJPROP_TEXT, StringFormat("L%d", level));
-      ObjectSetInteger(0, labelName, OBJPROP_COLOR, lineColor);
-      ObjectSetInteger(0, labelName, OBJPROP_FONTSIZE, 8);
+      ObjectSetInteger(0, labelName, OBJPROP_COLOR, LevelLineColor);
+      ObjectSetInteger(0, labelName, OBJPROP_FONTSIZE, LevelLabelFontSize);
       ObjectSetString(0, labelName, OBJPROP_FONT, "Arial");
       ObjectSetInteger(0, labelName, OBJPROP_ANCHOR, ANCHOR_LEFT);
       ObjectSetInteger(0, labelName, OBJPROP_SELECTABLE, false);
@@ -1193,7 +1192,13 @@ void CreateCloseOrderLabel(ulong ticket, int level, int orderType, double profit
    if(!g_showOrderLabels || !g_showOrderLabelsCtrl) return;
    
    string typeStr = (orderType == POSITION_TYPE_BUY) ? "B" : "S";
-   string labelName = StringFormat("OrderClose_%I64u", ticket);
+   
+   // Label name includes all details: ticket, level, type, profit, price, time
+   MqlDateTime dt;
+   TimeToStruct(time, dt);
+   string timeStr = StringFormat("%04d%02d%02d_%02d%02d%02d", dt.year, dt.mon, dt.day, dt.hour, dt.min, dt.sec);
+   string labelName = StringFormat("OrderClose_T%I64u_L%d_%s_P%.2f_Price%.5f_%s", 
+                                    ticket, level, typeStr, profit, price, timeStr);
    
    // Format profit: show decimal only if absolute value < 1
    string profitStr;

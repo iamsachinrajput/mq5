@@ -117,6 +117,8 @@ double MaxGapPoints = GapInPoints*1.10;        // Maximum gap points
 input bool   ShowLabels = true;         // Show chart labels (disable for performance)
 input bool   ShowOrderLabels = false;   // Show order open/close labels on chart
 input bool   ShowNextLevelLines = false; // Show next level lines on chart
+input color  LevelLineColor = clrWhite; // Color for level lines
+input int    LevelLabelFontSize = 8;    // Font size for level line labels
 input double MaxLossVlineThreshold = 100.0;  // Min loss to show max loss vline (0 = always show)
 input int    VlineOffsetCandles = 2;   // Current profit vline offset in candles from current time
 
@@ -143,7 +145,7 @@ input ENUM_NO_POSITIONS_ACTION NoPositionsAction = NO_POS_NEAREST_LEVEL; // Acti
 
 // Button Positioning
 input int    BtnXDistance = 200;         // Button X distance from right edge
-input int    BtnYDistance = 50;         // Button Y distance from top edge
+input int    BtnYDistance = 60;         // Button Y distance from top edge
 
 // Control Buttons (Show/Hide) Positioning
 enum ENUM_CTRL_CORNER {
@@ -154,7 +156,7 @@ enum ENUM_CTRL_CORNER {
 };
 input ENUM_CTRL_CORNER CtrlButtonCorner = CTRL_CORNER_RIGHT_UPPER; // Control buttons corner position
 input int    CtrlBtnXDistance = 200;      // Control buttons X distance from edge
-input int    CtrlBtnYDistance = 10;      // Control buttons Y distance from edge
+input int    CtrlBtnYDistance = 20;      // Control buttons Y distance from edge
 
 // Selection Panel Positioning (exact position like control buttons)
 input ENUM_CTRL_CORNER CtrlPanelCorner = CTRL_CORNER_RIGHT_UPPER; // Panel corner position
