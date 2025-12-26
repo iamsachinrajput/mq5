@@ -1127,6 +1127,14 @@ void DestroySelectionPanel() {
          ObjectDelete(0, StringFormat("SelectLabel_%d", i));
       }
    }
+   else if(g_activeSelectionPanel == "LinesControl") {
+      // Delete ALL button
+      ObjectDelete(0, "SelectLine_ALL");
+      // Delete all 4 line selection buttons
+      for(int i = 0; i < 4; i++) {
+         ObjectDelete(0, StringFormat("SelectLine_%d", i));
+      }
+   }
    
    ObjectDelete(0, "SelectionPanelBg");
    g_activeSelectionPanel = "";
@@ -1439,6 +1447,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          } else {
             CreateSelectionPanel("LinesControl");
          }
+         return;
       }
       
       // Button 6: Toggle Labels - Show selection panel for individual label control
@@ -1448,6 +1457,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          } else {
             CreateSelectionPanel("LabelControl");
          }
+         return;
       }
       
       // Button 7: Print Stats
