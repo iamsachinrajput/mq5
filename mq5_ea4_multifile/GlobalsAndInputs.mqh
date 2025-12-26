@@ -74,6 +74,17 @@ input int BoundaryDirectionalCount = 5;  // Number of opposite orders required f
 input int FarAdjacentDistance = 3;       // Starting distance for FAR_ADJACENT (1=adjacent, 3=skip 1 level, 5=skip 2 levels)
 input int FarAdjacentDepth = 5;          // Number of opposite-type levels to check from starting distance (1=strict, higher=flexible)
 
+// Boundary Order Placement Strategy (topmost BUY, bottommost SELL)
+enum ENUM_BOUNDARY_STRATEGY {
+   BOUNDARY_STRATEGY_ALWAYS = 0,           // Always allow boundary orders
+   BOUNDARY_STRATEGY_TRAIL_LAST = 1,       // Only when last same-type boundary order is in trail
+   BOUNDARY_STRATEGY_ORDER_COUNT = 2,      // Only when total orders count < helper threshold
+   BOUNDARY_STRATEGY_NO_TOTAL_TRAIL = 3,   // Only when total trail is not active
+   BOUNDARY_STRATEGY_GLO_MORE = 4          // Only when GLO > GPO
+};
+input ENUM_BOUNDARY_STRATEGY BoundaryOrderStrategy = BOUNDARY_STRATEGY_ALWAYS; // Strategy for boundary orders (topmost BUY, bottommost SELL)
+input int BoundaryStrategyHelper = 10;   // Helper value for boundary strategies (e.g., max order count for strategy 2)
+
 enum ENUM_ORDER_PLACEMENT_TYPE {
    ORDER_PLACEMENT_NORMAL = 0,    // Normal - only place orders when price crosses
    ORDER_PLACEMENT_FLEXIBLE = 1   // Flexible - also fill missed adjacent level orders

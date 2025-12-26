@@ -329,17 +329,147 @@ bool HasOrderNearLevel(int orderType, int level, double gap, int window) {
    return false;
 }
 
+// Check if order is a boundary order (topmost BUY or bottommost SELL)
+bool IsBoundaryOrder(int orderType, int level, double gap) {
+   if(orderType == POSITION_TYPE_BUY) {
+      // Check if there are any BUY orders above this level
+      for(int i = 0; i < g_orderCount; i++) {
+         if(!g_orders[i].isValid) continue;
+         if(g_orders[i].type != POSITION_TYPE_BUY) continue;
+         if(g_orders[i].level > level) return false;
+      }
+      return true; // No BUY above, this is topmost BUY
+   } else {
+      // Check if there are any SELL orders below this level
+      for(int i = 0; i < g_orderCount; i++) {
+         if(!g_orders[i].isValid) continue;
+         if(g_orders[i].type != POSITION_TYPE_SELL) continue;
+         if(g_orders[i].level < level) return false;
+      }
+      return true; // No SELL below, this is bottommost SELL
+   }
+}
+
+// Check if boundary order placement is allowed based on boundary strategy
+bool IsBoundaryOrderAllowed(int orderType, int level, double gap) {
+   string typeStr = (orderType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+   
+   switch(BoundaryOrderStrategy) {
+      case BOUNDARY_STRATEGY_ALWAYS:
+         Log(3, StringFormat("[BOUNDARY-PASSED] %s L%d | Strategy: ALWAYS", typeStr, level));
+         return true;
+      
+      case BOUNDARY_STRATEGY_TRAIL_LAST:
+         {
+            // Check if the last same-type boundary order is being trailed
+            // Find the current boundary order of same type
+            int boundaryLevel = 0;
+            bool foundBoundary = false;
+            
+            for(int i = 0; i < g_orderCount; i++) {
+               if(!g_orders[i].isValid) continue;
+               if(g_orders[i].type != orderType) continue;
+               
+               if(orderType == POSITION_TYPE_BUY) {
+                  if(!foundBoundary || g_orders[i].level > boundaryLevel) {
+                     boundaryLevel = g_orders[i].level;
+                     foundBoundary = true;
+                  }
+               } else {
+                  if(!foundBoundary || g_orders[i].level < boundaryLevel) {
+                     boundaryLevel = g_orders[i].level;
+                     foundBoundary = true;
+                  }
+               }
+            }
+            
+            if(!foundBoundary) {
+               Log(3, StringFormat("[BOUNDARY-PASSED] %s L%d | Strategy: TRAIL_LAST - No existing boundary", typeStr, level));
+               return true; // No existing boundary, allow new one
+            }
+            
+            // Check if boundary order is in trail
+            for(int i = 0; i < g_orderCount; i++) {
+               if(!g_orders[i].isValid) continue;
+               if(g_orders[i].type != orderType) continue;
+               if(g_orders[i].level != boundaryLevel) continue;
+               
+               ulong boundaryTicket = g_orders[i].ticket;
+               
+               // Check if this ticket is in trails array
+               for(int t = 0; t < ArraySize(g_trails); t++) {
+                  if(g_trails[t].ticket == boundaryTicket) {
+                     Log(3, StringFormat("[BOUNDARY-PASSED] %s L%d | Strategy: TRAIL_LAST - Boundary #%I64u L%d is in trail",
+                         typeStr, level, boundaryTicket, boundaryLevel));
+                     return true;
+                  }
+               }
+            }
+            
+            Log(2, StringFormat("[BOUNDARY-BLOCKED] %s L%d | Strategy: TRAIL_LAST - Boundary L%d not in trail",
+                typeStr, level, boundaryLevel));
+            return false;
+         }
+      
+      case BOUNDARY_STRATEGY_ORDER_COUNT:
+         {
+            int totalOrders = g_buyCount + g_sellCount;
+            if(totalOrders < BoundaryStrategyHelper) {
+               Log(3, StringFormat("[BOUNDARY-PASSED] %s L%d | Strategy: ORDER_COUNT - %d/%d orders",
+                   typeStr, level, totalOrders, BoundaryStrategyHelper));
+               return true;
+            }
+            Log(2, StringFormat("[BOUNDARY-BLOCKED] %s L%d | Strategy: ORDER_COUNT - %d >= %d orders",
+                typeStr, level, totalOrders, BoundaryStrategyHelper));
+            return false;
+         }
+      
+      case BOUNDARY_STRATEGY_NO_TOTAL_TRAIL:
+         {
+            if(!g_trailActive) {
+               Log(3, StringFormat("[BOUNDARY-PASSED] %s L%d | Strategy: NO_TOTAL_TRAIL - Total trail inactive",
+                   typeStr, level));
+               return true;
+            }
+            Log(2, StringFormat("[BOUNDARY-BLOCKED] %s L%d | Strategy: NO_TOTAL_TRAIL - Total trail active",
+                typeStr, level));
+            return false;
+         }
+      
+      case BOUNDARY_STRATEGY_GLO_MORE:
+         {
+            if(g_orders_in_loss > g_orders_in_profit) {
+               Log(3, StringFormat("[BOUNDARY-PASSED] %s L%d | Strategy: GLO_MORE - GLO:%d > GPO:%d",
+                   typeStr, level, g_orders_in_loss, g_orders_in_profit));
+               return true;
+            }
+            Log(2, StringFormat("[BOUNDARY-BLOCKED] %s L%d | Strategy: GLO_MORE - GLO:%d <= GPO:%d",
+                typeStr, level, g_orders_in_loss, g_orders_in_profit));
+            return false;
+         }
+   }
+   
+   return true; // Default allow
+}
+
 // Check if order placement is allowed based on strategy
 // Returns true if order can be placed, false if blocked by strategy
 bool IsOrderPlacementAllowed(int orderType, int level, double gap) {
-   // If no strategy, always allow
-   if(OrderPlacementStrategy == ORDER_STRATEGY_NONE) {
-      return true;
-   }
-   
    // If no open positions, always allow first order
    if(PositionsTotal() == 0) {
       Log(3, "[STRATEGY] No positions - allowing first order");
+      return true;
+   }
+   
+   // Check if this is a boundary order (topmost BUY or bottommost SELL)
+   if(IsBoundaryOrder(orderType, level, gap)) {
+      // Apply boundary order strategy instead of main strategy
+      return IsBoundaryOrderAllowed(orderType, level, gap);
+   }
+   
+   // Not a boundary order - apply main order placement strategy
+   // If no strategy, always allow
+   if(OrderPlacementStrategy == ORDER_STRATEGY_NONE) {
       return true;
    }
    
@@ -393,69 +523,10 @@ bool IsOrderPlacementAllowed(int orderType, int level, double gap) {
    // FarAdjacentDepth: How many opposite-type levels to check from starting point
    // Example: BUY at L6, Distance=3, Depth=2 checks SELL at L3, L1
    // Example: BUY at L6, Distance=5, Depth=3 checks SELL at L1, L-1, L-3
-   // Exception: Top BUY or Bottom SELL can always be placed
    if(OrderPlacementStrategy == ORDER_STRATEGY_FAR_ADJACENT) {
       string typeStr = (orderType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
       
-      // First, check if this is a boundary order (topmost BUY or bottommost SELL)
-      bool isTopBuy = false;
-      bool isBottomSell = false;
-      
-      if(orderType == POSITION_TYPE_BUY) {
-         // Check if there are any BUY orders above this level
-         isTopBuy = true;
-         for(int i = PositionsTotal() - 1; i >= 0; i--) {
-            ulong ticket = PositionGetTicket(i);
-            if(!PositionSelectByTicket(ticket)) continue;
-            if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-            if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
-            
-            int type = (int)PositionGetInteger(POSITION_TYPE);
-            if(type != POSITION_TYPE_BUY) continue;
-            
-            double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-            int existingLevel = PriceLevelIndex(openPrice, gap);
-            
-            if(existingLevel > level) {
-               isTopBuy = false;
-               break;
-            }
-         }
-         
-         if(isTopBuy) {
-            Log(3, StringFormat("[STRATEGY-PASSED] %s L%d | Top BUY - no far adjacent check needed",
-                typeStr, level));
-            return true;
-         }
-      } else {
-         // Check if there are any SELL orders below this level
-         isBottomSell = true;
-         for(int i = PositionsTotal() - 1; i >= 0; i--) {
-            ulong ticket = PositionGetTicket(i);
-            if(!PositionSelectByTicket(ticket)) continue;
-            if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-            if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
-            
-            int type = (int)PositionGetInteger(POSITION_TYPE);
-            if(type != POSITION_TYPE_SELL) continue;
-            
-            double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-            int existingLevel = PriceLevelIndex(openPrice, gap);
-            
-            if(existingLevel < level) {
-               isBottomSell = false;
-               break;
-            }
-         }
-         
-         if(isBottomSell) {
-            Log(3, StringFormat("[STRATEGY-PASSED] %s L%d | Bottom SELL - no far adjacent check needed",
-                typeStr, level));
-            return true;
-         }
-      }
-      
-      // Not a boundary order, check for opposite-type orders starting from specified distance
+      // Check for opposite-type orders starting from specified distance
       int requiredType = (orderType == POSITION_TYPE_BUY) ? POSITION_TYPE_SELL : POSITION_TYPE_BUY;
       string requiredTypeStr = (requiredType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
       
