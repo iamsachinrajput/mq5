@@ -461,6 +461,13 @@ bool IsOrderPlacementAllowed(int orderType, int level, double gap) {
       return true;
    }
    
+   // IMPORTANT: During total trail, strategy checks are bypassed
+   // Trail order management is handled separately in PlaceGridOrders() via TrailOrderMode
+   if(g_trailActive) {
+      Log(3, "[STRATEGY] Total trail active - bypassing strategy checks (managed by TrailOrderMode)");
+      return true;
+   }
+   
    // Check if this is a boundary order (topmost BUY or bottommost SELL)
    if(IsBoundaryOrder(orderType, level, gap)) {
       // Apply boundary order strategy instead of main strategy
