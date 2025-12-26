@@ -335,17 +335,45 @@ bool HasOrderNearLevel(int orderType, int level, double gap, int window) {
 bool IsBoundaryOrder(int orderType, int level, double gap) {
    if(orderType == POSITION_TYPE_BUY) {
       // BUY boundary: Check if any orders exist ABOVE this level
+      // First check tracking array
       for(int i = 0; i < g_orderCount; i++) {
          if(!g_orders[i].isValid) continue;
          if(g_orders[i].level > level) return false; // Found order above
       }
+      
+      // Fallback: Also check live positions to ensure accuracy
+      for(int i = PositionsTotal() - 1; i >= 0; i--) {
+         ulong ticket = PositionGetTicket(i);
+         if(!PositionSelectByTicket(ticket)) continue;
+         if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+         if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
+         
+         double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+         int existingLevel = PriceLevelIndex(openPrice, gap);
+         if(existingLevel > level) return false; // Found order above
+      }
+      
       return true; // No orders above - this is BUY boundary
    } else {
       // SELL boundary: Check if any orders exist BELOW this level
+      // First check tracking array
       for(int i = 0; i < g_orderCount; i++) {
          if(!g_orders[i].isValid) continue;
          if(g_orders[i].level < level) return false; // Found order below
       }
+      
+      // Fallback: Also check live positions to ensure accuracy
+      for(int i = PositionsTotal() - 1; i >= 0; i--) {
+         ulong ticket = PositionGetTicket(i);
+         if(!PositionSelectByTicket(ticket)) continue;
+         if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+         if((int)PositionGetInteger(POSITION_MAGIC) != Magic) continue;
+         
+         double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+         int existingLevel = PriceLevelIndex(openPrice, gap);
+         if(existingLevel < level) return false; // Found order below
+      }
+      
       return true; // No orders below - this is SELL boundary
    }
 }
